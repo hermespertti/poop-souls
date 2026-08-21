@@ -1,0 +1,1294 @@
+// POOP SOULS — game spine: input, camera, player, combat, mobs, bosses, progression, shrine, save.
+import * as THREE from 'three';
+import { SFX } from './audio';
+import { WEAPONS, MOBS, BOSSES, ZONES } from './data';
+import {
+  MobDef, BossDef, SaveData, SAVE_KEY,
+  MAX_TIER, STAT_MAX, hpFor, staminaFor, dmgFor, blockFor, statCost, tierBonus, gritForTier,
+  PARRY_WINDOW, DODGE_IFRAMES, DODGE_CD, BACKSTAB_MULT, HITSTUN, PLAYER_HITSTUN,
+} from './types';
+import { buildZone, ZoneBuild } from './world';
+
+declare global {
+  interface Window { __game: Record<string, unknown> }
+}
+
+// ============================== state ==============================
+type Mode = 'title' | 'play' | 'shrine' | 'over' | 'win';
+
+interface Attack { combo: number; t: number; dur: number; hitDone: boolean; }
+interface Mob {
+  def: MobDef; group: THREE.Group; mat: THREE.MeshStandardMaterial;
+  hp: number; home: THREE.Vector3; cd: number; telegraph: number; telegraphTotal: number;
+  hitstun: number; phase: number; aggroed: boolean; dead: boolean; hasSplit: boolean; baseY: number;
+}
+interface Boss {
+  def: BossDef; group: THREE.Group; mat: THREE.MeshStandardMaterial; hp: number;
+  state: 'idle' | 'windup'; cds: Record<string, number>; current: string; telegraph: number;
+  hitstop: number; idle: number; charge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
+  phase: number;
+}
+interface Particle { obj: THREE.Mesh; vel: THREE.Vector3; life: number; max: number; grav: number; }
+interface Proj { obj: THREE.Mesh; dir: THREE.Vector3; speed: number; life: number; dmg: number; radius: number; }
+interface Hazard { obj: THREE.Object3D; pos: THREE.Vector3; r: number; life: number; dmg: number; tick: number; kind: 'cloud' | 'wall'; rot: number; }
+interface Orb { obj: THREE.Mesh; pos: THREE.Vector3; souls: number; }
+interface GritDrop { obj: THREE.Mesh; pos: THREE.Vector3; n: number; }
+
+function defaultSave(): SaveData {
+  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false] };
+}
+
+const G = {
+  mode: 'title' as Mode,
+  save: defaultSave(),
+  zone: 0,
+  zoneBuild: null as ZoneBuild | null,
+  // player
+  pos: new THREE.Vector3(),
+  yaw: 0,
+  hp: 1, stamina: 1,
+  atk: null as Attack | null,
+  lastCombo: 1,
+  lastHitT: -9,
+  blockHeld: false, blockStart: -9,
+  dodging: 0, dodgeCd: 0, dodgeDir: new THREE.Vector3(0, 0, 1),
+  iframes: 0, hitstun: 0, hurtFlash: 0, blockChipT: 0,
+  weaponIdx: 0,
+  // world
+  mobs: [] as Mob[],
+  boss: null as Boss | null,
+  bossActive: false, bossIntro: 0,
+  projectiles: [] as Proj[],
+  hazards: [] as Hazard[],
+  parts: [] as Particle[],
+  orb: null as Orb | null,
+  gritDrops: [] as GritDrop[],
+  // meta
+  time: 0, runT: 0, kills: 0, deaths: 0, soulsEarned: 0,
+  camYaw: 0.8, camPitch: 0.42, camYawT: 0.8, camPitchT: 0.42, camDist: 7, camDistT: 7,
+  cinematic: false,
+};
+
+const hpMax = () => hpFor(G.save.stats.v);
+const stMax = () => staminaFor(G.save.stats.e);
+const levelOf = () => (G.save.stats.v - 1) + (G.save.stats.e - 1) + (G.save.stats.s - 1) + (G.save.stats.c - 1) + 1;
+
+// ============================== dom ==============================
+const $ = (id: string) => document.getElementById(id) as HTMLElement;
+const canvas = $('gameCanvas') as HTMLCanvasElement ?? document.createElement('canvas');
+const elHp = $('hpBar').firstElementChild as HTMLElement;
+const elHpVal = $('hpVal');
+const elSt = $('stBar').firstElementChild as HTMLElement;
+const elStVal = $('stVal');
+const elLvl = $('lvlVal');
+const elSouls = $('soulsVal');
+const elGrit = $('gritVal');
+const elWeapon = $('weaponName');
+const elZone = $('zoneName');
+const elBossWrap = $('bossWrap');
+const elBossName = $('bossName');
+const elBossBar = $('bossBar').firstElementChild as HTMLElement;
+const elBossSub = $('bossSub');
+const elInteract = $('interact');
+const elHint = $('hint');
+const elToast = $('toast');
+const elHud = $('hud');
+const elHudRight = $('hudRight');
+const panelTitle = $('panelTitle');
+const panelShrine = $('panelShrine');
+const panelOver = $('panelOver');
+const panelWin = $('panelWin');
+
+let toastTimer = 0;
+function toast(text: string, dur = 1.8) {
+  elToast.textContent = text;
+  elToast.style.opacity = '1';
+  toastTimer = dur;
+}
+
+// ============================== three setup ==============================
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101318);
+scene.fog = new THREE.Fog(0x101318, 8, 40);
+const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 200);
+const hemi = new THREE.HemisphereLight(0xffffff, 0x333344, 0.9);
+scene.add(hemi);
+const keyLight = new THREE.DirectionalLight(0xfff0e0, 0.5);
+keyLight.position.set(6, 10, 4);
+scene.add(keyLight);
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ============================== player model ==============================
+const player = new THREE.Group();
+{
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.55, 4, 10), new THREE.MeshStandardMaterial({ color: 0x4a6a8a, roughness: 0.6 }));
+  body.position.y = 0.75;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), new THREE.MeshStandardMaterial({ color: 0xd8b89a, roughness: 0.7 }));
+  head.position.y = 1.45;
+  const eyeGeo = new THREE.SphereGeometry(0.035, 6, 6);
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.08, 1.48, 0.18);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.08, 1.48, 0.18);
+  player.add(body, head, eyeL, eyeR);
+}
+const weaponPivot = new THREE.Group();
+weaponPivot.position.set(0.38, 0.72, 0.3);
+player.add(weaponPivot);
+scene.add(player);
+
+function buildWeaponMesh(idx: number): THREE.Group {
+  const w = WEAPONS[idx];
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x8a6a4a, roughness: 0.8 });
+  if (w.id === 'brush') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.7, 8), wood);
+    handle.position.y = 0.35;
+    const bristles = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.15, 10), new THREE.MeshStandardMaterial({ color: 0x9fb8c8 }));
+    bristles.position.y = 0.78;
+    g.add(handle, bristles);
+  } else if (w.id === 'seat') {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.12, 10, 18), new THREE.MeshStandardMaterial({ color: 0xd8d4c8, emissive: 0x2a2a20 }));
+    ring.position.y = 0.8;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.32, 6), new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.6 }));
+    spike.position.set(0.36, 0.8, 0); spike.rotation.z = -Math.PI / 2;
+    g.add(ring, spike);
+  } else if (w.id === 'trowel') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.55, 8), wood);
+    handle.position.y = 0.3;
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.42), new THREE.MeshStandardMaterial({ color: 0xc8a05a, metalness: 0.5, roughness: 0.4 }));
+    blade.position.y = 0.66;
+    g.add(handle, blade);
+  } else {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.8, 8), wood);
+    handle.position.y = 0.4;
+    const cup = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.18, 12), new THREE.MeshStandardMaterial({ color: 0xb0483a, roughness: 0.5 }));
+    cup.position.y = 0.86; cup.rotation.x = Math.PI;
+    g.add(handle, cup);
+  }
+  return g;
+}
+function setWeaponMesh() {
+  weaponPivot.clear();
+  weaponPivot.add(buildWeaponMesh(G.weaponIdx));
+}
+setWeaponMesh();
+
+// ============================== zone load ==============================
+function clearZoneEntities() {
+  for (const m of G.mobs) scene.remove(m.group);
+  G.mobs = [];
+  if (G.boss) { scene.remove(G.boss.group); G.boss = null; }
+  G.bossActive = false; G.bossIntro = 0;
+  for (const p of G.projectiles) scene.remove(p.obj);
+  G.projectiles = [];
+  for (const h of G.hazards) scene.remove(h.obj);
+  G.hazards = [];
+  for (const p of G.parts) scene.remove(p.obj);
+  G.parts = [];
+  if (G.orb) { scene.remove(G.orb.obj); G.orb = null; }
+  for (const d of G.gritDrops) scene.remove(d.obj);
+  G.gritDrops = [];
+}
+
+function loadZone(i: number) {
+  G.zone = i; G.save.zone = i;
+  if (G.zoneBuild) scene.remove(G.zoneBuild.root);
+  clearZoneEntities();
+  const zb = buildZone(i);
+  G.zoneBuild = zb;
+  scene.add(zb.root);
+  const a = zb.ambient;
+  scene.fog = new THREE.Fog(a.fog, a.fogNear, a.fogFar);
+  (scene.background as THREE.Color).setHex(a.background);
+  hemi.color.setHex(a.hemiSky);
+  hemi.groundColor.setHex(a.hemiGround);
+  hemi.intensity = a.hemiIntensity;
+  // spawn mobs
+  const zd = ZONES[i];
+  const n = zd.mobs.length;
+  for (let k = 0; k < n; k++) {
+    const def = MOBS[zd.mobs[k]];
+    const ang = (k / n) * Math.PI * 2 + 0.5;
+    const r = zd.size * 0.5 + (k % 3) * 2;
+    const pos = new THREE.Vector3(Math.cos(ang) * r, 0, Math.sin(ang) * r - zd.size * 0.2);
+    spawnMob(def, pos);
+  }
+  G.pos = zb.spawn.clone();
+  const toCenter = new THREE.Vector3(0, 0, 0).sub(G.pos);
+  G.yaw = Math.atan2(toCenter.x, toCenter.z);
+  G.camYaw = G.camYawT = G.yaw; G.camPitch = G.camPitchT = 0.42; G.camDist = G.camDistT = 7;
+  G.hp = hpMax(); G.stamina = stMax();
+  G.atk = null; G.blockHeld = false; G.dodging = 0; G.hitstun = 0; G.iframes = 0;
+  elZone.textContent = ZONES[G.zone].name;
+  save();
+}
+
+// ============================== mobs ==============================
+function makeMobGroup(def: MobDef): { group: THREE.Group; mat: THREE.MeshStandardMaterial } {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: def.color, roughness: 0.7 });
+  let body: THREE.Mesh;
+  if (def.kind === 'tank') {
+    body = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 1.1, 12), mat);
+    body.position.y = 0.55;
+    const top = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat);
+    top.position.y = 1.05;
+    g.add(top);
+  } else if (def.kind === 'ranged') {
+    mat.transparent = true; mat.opacity = 0.75;
+    body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), mat);
+    body.position.y = 0.5;
+  } else if (def.kind === 'slime') {
+    mat.transparent = true; mat.opacity = 0.9;
+    body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), mat);
+    body.scale.y = 0.75;
+    body.position.y = 0.35;
+  } else {
+    body = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.4, 4, 8), mat);
+    body.position.y = 0.5;
+  }
+  g.add(body);
+  // eyes: higher on the front for tanks, standard for the rest
+  const eyeY = def.kind === 'tank' ? 1.18 : 0.72;
+  const eyeZ = def.kind === 'tank' ? 0.42 : 0.3;
+  const eyeGeo = new THREE.SphereGeometry(0.05, 6, 6);
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x141414 });
+  const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.12, eyeY, eyeZ);
+  const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.12, eyeY, eyeZ);
+  g.add(eL, eR);
+  g.scale.setScalar(def.scale);
+  return { group: g, mat };
+}
+
+function spawnMob(def: MobDef, pos: THREE.Vector3): Mob {
+  const { group, mat } = makeMobGroup(def);
+  group.position.copy(pos);
+  scene.add(group);
+  const m: Mob = {
+    def, group, mat, hp: def.hp, home: pos.clone(), cd: 0.5 + Math.random() * 1.5,
+    telegraph: 0, telegraphTotal: 1, hitstun: 0, phase: Math.random() * 6.28,
+    aggroed: false, dead: false, hasSplit: false, baseY: 0,
+  };
+  G.mobs.push(m);
+  return m;
+}
+
+function killMob(m: Mob) {
+  m.dead = true;
+  scene.remove(m.group);
+  burst(m.group.position, m.def.color, 18, 4, 0.7, 0.1);
+  SFX.hitEnemy();
+  G.kills++;
+  if (m.def.id !== 'gloop_small') dropSouls(m.group.position, m.def.souls);
+  else dropSouls(m.group.position, m.def.souls);
+  if (m.def.id === 'clog') dropGrit(m.group.position, 1);
+  // gloop splits once
+  if (m.def.id === 'gloop' && !m.hasSplit && G.zone >= 1) {
+    for (let i = 0; i < 2; i++) {
+      const small = MOBS['gloop_small'];
+      const off = new THREE.Vector3(i === 0 ? -0.5 : 0.5, 0, 0);
+      spawnMob(small, m.group.position.clone().add(off));
+    }
+  }
+}
+
+function updateMobs(dt: number) {
+  const size = ZONES[G.zone].size;
+  for (let i = G.mobs.length - 1; i >= 0; i--) {
+    const m = G.mobs[i];
+    if (m.dead) { G.mobs.splice(i, 1); continue; }
+    const dx = G.pos.x - m.group.position.x;
+    const dz = G.pos.z - m.group.position.z;
+    const dist = Math.hypot(dx, dz);
+    if (m.hitstun > 0) {
+      m.hitstun -= dt;
+      m.group.rotation.y += dt * 6;
+      continue;
+    }
+    // aggro latch
+    if (!m.aggroed && dist < m.def.aggro) m.aggroed = true;
+    if (!m.aggroed) {
+      // idle wobble at home
+      m.group.position.x = m.home.x + Math.sin(G.time * 0.8 + m.phase) * 0.4;
+      m.group.position.z = m.home.z + Math.cos(G.time * 0.6 + m.phase) * 0.4;
+      continue;
+    }
+    // face player
+    m.group.rotation.y = Math.atan2(dx, dz);
+    // telegraph / attack
+    if (m.telegraph > 0) {
+      m.telegraph -= dt;
+      const f = 1 - m.telegraph / m.telegraphTotal;
+      m.mat.emissive.setHex(0xff4444);
+      m.mat.emissiveIntensity = 0.2 + f * 0.9;
+      if (m.telegraph <= 0) {
+        m.mat.emissiveIntensity = 0;
+        m.cd = m.def.attackCd;
+        if (m.def.kind === 'ranged') {
+          if (dist < m.def.attackRange * 1.25) {
+            const dir = new THREE.Vector3(dx, 0, dz).normalize();
+            spawnProj(m.group.position.clone().add(new THREE.Vector3(0, 0.5, 0)), dir, 6.5, m.def.damage, 0x9adf5a, 0.42);
+          }
+        } else if (dist < m.def.attackRange * 1.15) {
+          damagePlayer(m.def.damage, true);
+        }
+      }
+    } else {
+      m.mat.emissiveIntensity = 0;
+      m.cd -= dt;
+      const isRanged = m.def.kind === 'ranged';
+      const keep = isRanged ? m.def.attackRange * 0.7 : m.def.attackRange * 0.8;
+      if (dist > keep) {
+        // chase with wobble
+        const wob = Math.sin(G.time * 3 + m.phase) * 0.3;
+        const dirX = dx / (dist || 1), dirZ = dz / (dist || 1);
+        const px = -dirZ * wob, pz = dirX * wob;
+        m.group.position.x += (dirX + px) * m.def.speed * dt;
+        m.group.position.z += (dirZ + pz) * m.def.speed * dt;
+      }
+      if (m.cd <= 0 && dist < m.def.attackRange && m.telegraph <= 0) {
+        m.telegraph = m.def.telegraph;
+        m.telegraphTotal = m.def.telegraph;
+      }
+    }
+    // bob / squash anim
+    const t = G.time * 6 + m.phase;
+    if (m.def.kind === 'slime' || m.def.kind === 'ranged') {
+      m.group.scale.y = m.def.scale * (1 + Math.sin(t) * 0.09);
+    } else {
+      m.group.position.y = Math.abs(Math.sin(t)) * 0.06;
+    }
+    // arena clamp
+    m.group.position.x = THREE.MathUtils.clamp(m.group.position.x, -size + 1, size - 1);
+    m.group.position.z = THREE.MathUtils.clamp(m.group.position.z, -size + 1, size - 1);
+  }
+}
+
+// ============================== projectiles & hazards ==============================
+function spawnProj(pos: THREE.Vector3, dir: THREE.Vector3, speed: number, dmg: number, color: number, radius: number) {
+  const obj = new THREE.Mesh(new THREE.SphereGeometry(radius, 10, 8), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+  obj.position.copy(pos);
+  scene.add(obj);
+  G.projectiles.push({ obj, dir: dir.clone().normalize(), speed, life: 4, dmg, radius });
+}
+
+function spawnCloud(pos: THREE.Vector3, r: number, life: number, dmg: number) {
+  const obj = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 10), new THREE.MeshBasicMaterial({ color: 0x7ab04a, transparent: true, opacity: 0.3 }));
+  obj.position.copy(pos).add(new THREE.Vector3(0, r * 0.5, 0));
+  scene.add(obj);
+  G.hazards.push({ obj, pos: pos.clone(), r, life, dmg, tick: 0, kind: 'cloud', rot: 0 });
+}
+
+function spawnWall(pos: THREE.Vector3, rot: number, life: number, dmg: number) {
+  const obj = new THREE.Mesh(new THREE.BoxGeometry(8, 2.6, 1.2), new THREE.MeshBasicMaterial({ color: 0x8a5a3a, transparent: true, opacity: 0.8 }));
+  obj.position.copy(pos).add(new THREE.Vector3(0, 1.3, 0));
+  obj.rotation.y = rot;
+  scene.add(obj);
+  G.hazards.push({ obj, pos: pos.clone(), r: 4, life, dmg, tick: 0, kind: 'wall', rot });
+}
+
+function updateProjectiles(dt: number) {
+  const size = ZONES[G.zone].size;
+  for (let i = G.projectiles.length - 1; i >= 0; i--) {
+    const p = G.projectiles[i];
+    p.obj.position.addScaledVector(p.dir, p.speed * dt);
+    p.life -= dt;
+    const d = p.obj.position.distanceTo(G.pos.clone().setY(p.obj.position.y));
+    let dead = p.life <= 0 || Math.abs(p.obj.position.x) > size - 0.4 || Math.abs(p.obj.position.z) > size - 0.4;
+    if (d < p.radius + 0.5) { damagePlayer(p.dmg, false); dead = true; }
+    if (dead) { scene.remove(p.obj); G.projectiles.splice(i, 1); }
+  }
+}
+
+function updateHazards(dt: number) {
+  for (let i = G.hazards.length - 1; i >= 0; i--) {
+    const h = G.hazards[i];
+    h.life -= dt;
+    h.tick -= dt;
+    const mat = (h.obj as THREE.Mesh).material as THREE.MeshBasicMaterial;
+    mat.opacity = Math.min(0.85, h.life * 0.5);
+    let hit = false;
+    if (h.kind === 'cloud') {
+      hit = G.pos.distanceTo(h.pos) < h.r + 0.4;
+    } else {
+      const dx = G.pos.x - h.pos.x, dz = G.pos.z - h.pos.z;
+      const cos = Math.cos(-h.rot), sin = Math.sin(-h.rot);
+      const lx = dx * cos - dz * sin, lz = dx * sin + dz * cos;
+      hit = Math.abs(lx) < 4.2 && Math.abs(lz) < 0.9;
+    }
+    if (hit && h.tick <= 0) { damagePlayer(h.dmg, false); h.tick = 0.8; }
+    if (h.life <= 0) { scene.remove(h.obj); G.hazards.splice(i, 1); }
+  }
+}
+
+// ============================== particles ==============================
+function burst(pos: THREE.Vector3, color: number, n: number, speed = 4, life = 0.6, size = 0.09, grav = 7) {
+  for (let i = 0; i < n; i++) {
+    const obj = new THREE.Mesh(new THREE.SphereGeometry(size, 6, 5), new THREE.MeshBasicMaterial({ color, transparent: true }));
+    obj.position.copy(pos);
+    scene.add(obj);
+    const vel = new THREE.Vector3((Math.random() - 0.5), Math.random() * 0.8, (Math.random() - 0.5)).normalize().multiplyScalar(speed * (0.4 + Math.random() * 0.8));
+    G.parts.push({ obj, vel, life: life * (0.6 + Math.random() * 0.6), max: life, grav });
+  }
+}
+function updateParticles(dt: number) {
+  for (let i = G.parts.length - 1; i >= 0; i--) {
+    const p = G.parts[i];
+    p.life -= dt;
+    p.vel.y -= p.grav * dt;
+    p.obj.position.addScaledVector(p.vel, dt);
+    if (p.obj.position.y < 0.05) { p.obj.position.y = 0.05; p.vel.y *= -0.4; p.vel.x *= 0.8; p.vel.z *= 0.8; }
+    (p.obj.material as THREE.MeshBasicMaterial).opacity = Math.max(0, p.life / p.max);
+    if (p.life <= 0) { scene.remove(p.obj); G.parts.splice(i, 1); }
+  }
+}
+
+// ============================== souls & grit ==============================
+function makeOrbMesh(): THREE.Mesh {
+  const obj = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), new THREE.MeshBasicMaterial({ color: 0x7fb8ff, transparent: true, opacity: 0.95 }));
+  scene.add(obj);
+  return obj;
+}
+function dropSouls(pos: THREE.Vector3, souls: number) {
+  if (G.orb) { G.orb.souls += souls; }
+  else {
+    const obj = makeOrbMesh();
+    G.orb = { obj, pos: pos.clone().setY(0.4), souls };
+  }
+}
+function makeGritMesh(): THREE.Mesh {
+  const obj = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), new THREE.MeshBasicMaterial({ color: 0xd8a24a }));
+  scene.add(obj);
+  return obj;
+}
+function dropGrit(pos: THREE.Vector3, n: number) {
+  const obj = makeGritMesh();
+  obj.position.copy(pos).setY(0.5);
+  G.gritDrops.push({ obj, pos: pos.clone().setY(0.5), n });
+}
+function updateDrops(dt: number) {
+  if (G.orb) {
+    G.orb.obj.position.y = G.orb.pos.y + Math.sin(G.time * 3) * 0.12;
+    G.orb.obj.position.x = G.orb.pos.x;
+    G.orb.obj.position.z = G.orb.pos.z;
+    if ((G.mode === 'play' || G.mode === 'shrine') && G.pos.distanceTo(G.orb.pos) < 1.3) {
+      G.save.souls += G.orb.souls;
+      G.soulsEarned += G.orb.souls;
+      burst(G.orb.pos, 0x7fb8ff, 14, 3, 0.5, 0.07);
+      SFX.soulPickup();
+      toast(`+${G.orb.souls} SOULS`);
+      scene.remove(G.orb.obj);
+      G.orb = null;
+      save();
+    }
+  }
+  for (let i = G.gritDrops.length - 1; i >= 0; i--) {
+    const d = G.gritDrops[i];
+    d.obj.rotation.y += dt * 3;
+    d.obj.position.y = d.pos.y + Math.sin(G.time * 2.5 + i) * 0.1;
+    if ((G.mode === 'play' || G.mode === 'shrine') && G.pos.distanceTo(d.pos) < 1.3) {
+      G.save.grit += d.n;
+      burst(d.pos, 0xd8a24a, 10, 3, 0.5, 0.06);
+      SFX.soulPickup();
+      toast(`+${d.n} GRIT`);
+      scene.remove(d.obj);
+      G.gritDrops.splice(i, 1);
+      save();
+    }
+  }
+}
+
+// ============================== combat: player ==============================
+const facing = () => new THREE.Vector3(Math.sin(G.yaw), 0, Math.cos(G.yaw));
+
+function startAttack() {
+  if (G.atk || G.mode !== 'play' || G.hitstun > 0 || G.dodging > 0) return;
+  const w = WEAPONS[G.weaponIdx];
+  if (G.stamina < w.staminaCost) return;
+  G.stamina -= w.staminaCost;
+  const sinceLast = G.time - G.lastHitT;
+  const combo = sinceLast < 0.9 ? Math.min(3, G.lastCombo + 1) : 1;
+  G.atk = { combo, t: 0, dur: 0.5 / w.speed, hitDone: false };
+  SFX.swing(combo === 3);
+}
+
+function doPlayerHit() {
+  const w = WEAPONS[G.weaponIdx];
+  const tier = G.save.weaponTiers[G.weaponIdx];
+  const base = w.damage * (G.atk!.combo === 3 ? w.heavyMult : 1) * tierBonus(tier) * dmgFor(G.save.stats.s);
+  const dir = facing();
+  const targets: { obj: THREE.Object3D; hp: number; setHp: (n: number) => void; radius: number; isBoss: boolean; behind: boolean }[] = [];
+  for (const m of G.mobs) {
+    if (m.dead) continue;
+    const to = m.group.position.clone().sub(G.pos);
+    const d = to.length();
+    if (d < w.range + m.def.radius) {
+      const ang = Math.acos(THREE.MathUtils.clamp(to.normalize().dot(dir), -1, 1));
+      if (ang < w.arc / 2 + m.def.radius) {
+        targets.push({ obj: m.group, hp: m.hp, setHp: (n) => { m.hp = n; }, radius: m.def.radius, isBoss: false, behind: to.clone().normalize().dot(dir) < -0.4 });
+      }
+    }
+  }
+  if (G.boss && G.bossActive && G.bossIntro <= 0) {
+    const to = G.boss.group.position.clone().sub(G.pos);
+    const d = to.length();
+    if (d < w.range + G.boss.def.scale * 0.9) {
+      const ang = Math.acos(THREE.MathUtils.clamp(to.normalize().dot(dir), -1, 1));
+      if (ang < w.arc / 2 + G.boss.def.scale * 0.5) {
+        targets.push({ obj: G.boss.group, hp: G.boss.hp, setHp: (n) => { G.boss!.hp = n; }, radius: G.boss.def.scale * 0.6, isBoss: true, behind: to.clone().normalize().dot(dir) < -0.4 });
+      }
+    }
+  }
+  for (const t of targets) {
+    let dmg = base;
+    if (t.behind) { dmg *= BACKSTAB_MULT; toast('BACKSTAB', 0.9); }
+    t.setHp(t.hp - dmg);
+    const hitPos = (t.obj.position as THREE.Vector3).clone().setY(1);
+    burst(hitPos, t.isBoss ? 0xffffff : 0xd8d4c8, 8, 3.5, 0.4, 0.07);
+    if (t.isBoss) { SFX.bossHit(); G.boss!.hitstop = 0.12; } else SFX.hitEnemy();
+    if (!t.isBoss) {
+      const m = G.mobs.find((mm) => mm.group === t.obj);
+      if (m) {
+        m.hitstun = HITSTUN;
+        const kb = hitPos.clone().sub(G.pos).setY(0).normalize().multiplyScalar(1.6);
+        m.group.position.add(kb);
+        if (m.hp <= 0) killMob(m);
+      }
+    } else if (G.boss!.hp <= 0) {
+      bossDefeated();
+    }
+  }
+  G.lastCombo = G.atk ? G.atk.combo : 1;
+  G.lastHitT = G.time;
+}
+
+function damagePlayer(raw: number, melee: boolean) {
+  if (G.iframes > 0 || G.hitstun > 0 || G.mode !== 'play') return;
+  let dmg = raw;
+  if (G.blockHeld && melee) {
+    const sinceBlock = G.time - G.blockStart;
+    if (sinceBlock < PARRY_WINDOW) {
+      SFX.parry();
+      G.stamina = Math.max(0, G.stamina - 10);
+      toast('PARRY', 0.8);
+      burst(G.pos.clone().setY(1.2), 0xffffff, 12, 4, 0.4, 0.06);
+      // stagger nearest
+      for (const m of G.mobs) {
+        if (!m.dead && G.pos.distanceTo(m.group.position) < 3.5) { m.hitstun = 0.9; }
+      }
+      if (G.boss && G.bossActive && G.bossIntro <= 0 && G.pos.distanceTo(G.boss.group.position) < 4.5) G.boss.hitstop = 0.8;
+      return;
+    }
+    const red = blockFor(G.save.stats.c);
+    // gate chip damage so continuous contact (charge, wall) doesn't drain at 60fps
+    if (G.time - G.blockChipT < 0.45) return;
+    G.blockChipT = G.time;
+    dmg = raw * (1 - red);
+    G.stamina = Math.max(0, G.stamina - raw * 0.5);
+    SFX.block();
+    if (G.stamina <= 0) { G.hitstun = 0.5; }
+  } else {
+    G.hitstun = PLAYER_HITSTUN;
+    SFX.hitPlayer();
+  }
+  G.hurtFlash = 0.4;
+  G.hp -= dmg;
+  if (G.hp <= 0) { G.hp = 0; die(); }
+}
+
+function die() {
+  SFX.death();
+  G.deaths++;
+  // drop orb (replace any old orb — those souls are gone, classic)
+  if (G.orb) scene.remove(G.orb.obj);
+  const obj = makeOrbMesh();
+  obj.position.copy(G.pos).setY(0.4);
+  G.orb = { obj, pos: G.pos.clone().setY(0.4), souls: G.save.souls };
+  G.save.souls = 0;
+  burst(G.pos.clone().setY(1), 0x4a6a8a, 24, 4, 0.9, 0.1);
+  G.mode = 'over';
+  const sub = G.orb.souls > 0 ? `${G.orb.souls} souls dropped at the scene of the crime. Die again before you grab them and they're gone.` : 'No souls to lose. At least something.';
+  $('overSub').textContent = sub;
+  save();
+}
+
+function resurrect() {
+  const zb = G.zoneBuild;
+  if (!zb) return;
+  G.hp = hpMax(); G.stamina = stMax();
+  G.pos = zb.bonfire.clone().add(new THREE.Vector3(1.5, 0, 1.5));
+  G.hitstun = 0; G.iframes = 1; G.atk = null; G.dodging = 0;
+  G.mode = 'play';
+  SFX.bonfire();
+  save();
+}
+
+function switchWeapon(i: number) {
+  if (i < 0 || i >= WEAPONS.length || i === G.weaponIdx) return;
+  G.weaponIdx = i;
+  setWeaponMesh();
+  SFX.equip();
+  const w = WEAPONS[i];
+  toast(`${w.emoji} ${w.name} +${G.save.weaponTiers[i]}`, 1.2);
+}
+
+// ============================== player update ==============================
+const keys: Record<string, boolean> = {};
+let spaceQueued = false;
+
+function updatePlayer(dt: number) {
+  // timers
+  G.dodgeCd = Math.max(0, G.dodgeCd - dt);
+  G.iframes = Math.max(0, G.iframes - dt);
+  G.hurtFlash = Math.max(0, G.hurtFlash - dt);
+  const w = WEAPONS[G.weaponIdx];
+
+  if (G.hitstun > 0) {
+    G.hitstun -= dt;
+  } else if (G.dodging > 0) {
+    G.dodging -= dt;
+    G.pos.addScaledVector(G.dodgeDir, 9 * dt);
+  } else {
+    // movement
+    const fwd = facing();
+    const right = new THREE.Vector3(Math.cos(G.yaw), 0, -Math.sin(G.yaw));
+    const mv = new THREE.Vector3();
+    if (keys['w']) mv.add(fwd);
+    if (keys['s']) mv.sub(fwd);
+    if (keys['d']) mv.add(right);
+    if (keys['a']) mv.sub(right);
+    const moving = mv.lengthSq() > 0;
+    if (moving) {
+      mv.normalize();
+      const speed = G.blockHeld ? 2.6 : 5.4;
+      G.pos.addScaledVector(mv, speed * dt);
+      const targetYaw = Math.atan2(mv.x, mv.z);
+      G.yaw = targetYaw;
+    }
+    // block
+    if (G.blockHeld && G.time - G.blockStart > 0.02) {
+      G.stamina = Math.max(0, G.stamina - 10 * dt);
+    }
+    // dodge
+    if (spaceQueued) {
+      if (G.dodgeCd <= 0 && G.stamina >= 20) {
+        G.dodging = 0.32;
+        G.iframes = DODGE_IFRAMES;
+        G.dodgeCd = DODGE_CD;
+        G.stamina -= 20;
+        G.dodgeDir = moving ? mv.clone() : fwd.clone();
+        SFX.dodge();
+      }
+    }
+    // attack
+    if (mouseDown) startAttack();
+  }
+  spaceQueued = false;
+  // stamina regen
+  if (!G.blockHeld && !G.atk) G.stamina = Math.min(stMax(), G.stamina + 26 * dt);
+  // arena clamp
+  const size = ZONES[G.zone].size;
+  G.pos.x = THREE.MathUtils.clamp(G.pos.x, -size + 0.8, size - 0.8);
+  G.pos.z = THREE.MathUtils.clamp(G.pos.z, -size + 0.8, size - 0.8);
+  // pillar collision
+  const zb = G.zoneBuild;
+  if (zb) {
+    for (const p of zb.pillars) {
+      const dx = G.pos.x - p.x, dz = G.pos.z - p.z;
+      const d = Math.hypot(dx, dz);
+      const min = 0.7 + 0.45;
+      if (d < min && d > 0.001) {
+        G.pos.x = p.x + (dx / d) * min;
+        G.pos.z = p.z + (dz / d) * min;
+      }
+    }
+  }
+  // attack progression
+  if (G.atk) {
+    G.atk.t += dt;
+    const f = G.atk.t / G.atk.dur;
+    if (f < 0.45) weaponPivot.rotation.y = THREE.MathUtils.lerp(0, -2.3, f / 0.45);
+    else if (!G.atk.hitDone) {
+      G.atk.hitDone = true;
+      weaponPivot.rotation.y = 0.9;
+      doPlayerHit();
+    } else {
+      weaponPivot.rotation.y = THREE.MathUtils.lerp(0.9, 0, (f - 0.45) / 0.55);
+    }
+    if (G.atk.t >= G.atk.dur) { G.atk = null; weaponPivot.rotation.y = 0; }
+  }
+  // apply transform
+  player.position.copy(G.pos);
+  player.rotation.y = G.yaw;
+  // hurt tint
+  const bodyMat = (player.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+  bodyMat.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
+  bodyMat.emissiveIntensity = G.hurtFlash * 2;
+}
+
+// ============================== boss ==============================
+function startBoss() {
+  const zb = G.zoneBuild;
+  if (!zb || G.bossActive || G.boss) return;
+  const zd = ZONES[G.zone];
+  const def = BOSSES[zd.boss];
+  const { group, mat } = makeBossGroup(def);
+  group.position.copy(zb.boss);
+  scene.add(group);
+  const newBoss: Boss = {
+    def, group, mat, hp: def.hp, state: 'idle',
+    cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55, charge: null, targetPos: null, phase: Math.random() * 6.28,
+  };
+  for (const a of Object.keys(def.attacks)) newBoss.cds[a] = 1;
+  G.boss = newBoss;
+  G.bossActive = true;
+  G.bossIntro = 2.4;
+  SFX.bossRoar();
+  toast(`${def.name} — ${def.title}`, 2.6);
+}
+
+function makeBossGroup(def: BossDef): { group: THREE.Group; mat: THREE.MeshStandardMaterial } {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: def.color, roughness: 0.5, emissive: def.color, emissiveIntensity: 0.08 });
+  if (def.id === 'porcelain_king') {
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.5, 0.9, 4, 10), mat);
+    body.position.y = 1.3;
+    const crown = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.08, 8, 14), new THREE.MeshStandardMaterial({ color: 0xd8b04a, metalness: 0.7 }));
+    crown.rotation.x = Math.PI / 2;
+    crown.position.y = 2.15;
+    // giant seat
+    const seat = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.14, 10, 18), new THREE.MeshStandardMaterial({ color: 0xf0f0f5 }));
+    seat.position.set(0.9, 1.4, 0.4);
+    const eyeGeo = new THREE.SphereGeometry(0.06, 6, 6);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.16, 1.75, 0.42);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.16, 1.75, 0.42);
+    g.add(body, crown, seat, eL, eR);
+  } else if (def.id === 'overflow_lord') {
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.9, 14, 12), mat);
+    body.scale.set(1, 1.35, 1);
+    body.position.y = 1.3;
+    const eyeGeo = new THREE.SphereGeometry(0.08, 6, 6);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffff88 });
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.25, 1.9, 0.75);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.25, 1.9, 0.75);
+    const drip = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 8), mat);
+    drip.position.set(0.4, 0.55, 0); drip.rotation.x = Math.PI;
+    g.add(body, eL, eR, drip);
+  } else {
+    // the great stool: stacked primordial blobs
+    for (let i = 0; i < 3; i++) {
+      const s = 1.5 - i * 0.35;
+      const blob = new THREE.Mesh(new THREE.SphereGeometry(s, 14, 10), mat);
+      blob.position.y = 0.8 + i * 1.15;
+      blob.scale.y = 0.62;
+      g.add(blob);
+    }
+    const eyeGeo = new THREE.SphereGeometry(0.12, 8, 6);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff6a9a });
+    const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.4, 3.0, 1.1);
+    const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.4, 3.0, 1.1);
+    g.add(eL, eR);
+  }
+  g.scale.setScalar(def.scale * 0.55);
+  return { group: g, mat };
+}
+
+function bossDefeated() {
+  if (!G.boss) return;
+  const b = G.boss;
+  SFX.bossDefeat();
+  burst(b.group.position.clone().setY(1.5), b.def.color, 40, 6, 1.2, 0.14);
+  burst(b.group.position.clone().setY(1.5), 0xffffff, 24, 5, 0.9, 0.1);
+  scene.remove(b.group);
+  G.save.souls += b.def.souls;
+  G.soulsEarned += b.def.souls;
+  G.save.grit += ZONES[G.zone].bossGrit;
+  G.save.bossesDefeated[G.zone] = true;
+  G.kills++;
+  G.boss = null;
+  G.bossActive = false;
+  if (G.zone < 2) {
+    toast('ZONE CLEARED', 2.4);
+    loadZone(G.zone + 1);
+  } else {
+    G.mode = 'win';
+    const m = Math.floor(G.runT / 60), s = Math.floor(G.runT % 60);
+    $('winStats').innerHTML = `Level ${levelOf()} · ${G.kills} foes slain · ${G.deaths} deaths<br>${G.soulsEarned} souls earned · ${m}m ${s}s<br>The Throne is clean. You may, at last, sit.`;
+    save();
+  }
+}
+
+function updateBoss(dt: number) {
+  const b = G.boss;
+  if (!b || !G.bossActive) return;
+  if (G.bossIntro > 0) {
+    G.bossIntro -= dt;
+    b.group.scale.setScalar(b.def.scale * 0.55 * (1 + Math.sin(G.time * 30) * 0.04));
+    return;
+  }
+  if (b.hitstop > 0) { b.hitstop -= dt; return; }
+  const maxHp = b.def.hp;
+  const frac = b.hp / maxHp;
+  const phase = b.def.phases.find((p) => p.hpFrac >= frac) ?? b.def.phases[b.def.phases.length - 1];
+  const size = ZONES[G.zone].size;
+  // face player
+  const dx = G.pos.x - b.group.position.x;
+  const dz = G.pos.z - b.group.position.z;
+  const dist = Math.hypot(dx, dz);
+  b.group.rotation.y = Math.atan2(dx, dz);
+  // breathing anim
+  b.group.scale.setScalar(b.def.scale * 0.55 * (1 + Math.sin(G.time * 2 + b.phase) * 0.03));
+
+  if (b.charge) {
+    b.charge.t -= dt;
+    b.group.position.addScaledVector(b.charge.dir, 9 * dt);
+    b.group.position.x = THREE.MathUtils.clamp(b.group.position.x, -size + 1.5, size - 1.5);
+    b.group.position.z = THREE.MathUtils.clamp(b.group.position.z, -size + 1.5, size - 1.5);
+    if (dist < 1.9 + b.def.scale * 0.4) damagePlayer(b.def.attacks[b.current].damage, true);
+    if (b.charge.t <= 0) b.charge = null;
+    return;
+  }
+  if (b.state === 'windup') {
+    b.telegraph -= dt;
+    const atk = b.def.attacks[b.current];
+    const f = atk.telegraph > 0 ? 1 - b.telegraph / atk.telegraph : 1;
+    b.mat.emissive.setHex(0xff5544);
+    b.mat.emissiveIntensity = 0.15 + f * 0.7;
+    if (b.telegraph <= 0) {
+      b.mat.emissive.setHex(b.def.color);
+      b.mat.emissiveIntensity = 0.08;
+      executeBossAttack(b, atk.damage, atk.range);
+      b.cds[b.current] = atk.cd * phase.cdMult;
+      b.state = 'idle';
+      b.current = '';
+      b.idle = 0.35;
+    }
+    return;
+  }
+  // idle: walk toward player + pick attacks
+  const walkSpd = 2.8;
+  if (dist > 2.2) {
+    b.group.position.add(new THREE.Vector3(dx / (dist || 1), 0, dz / (dist || 1)).multiplyScalar(walkSpd * dt));
+  }
+  for (const a of Object.keys(b.cds)) b.cds[a] -= dt;
+  b.idle -= dt;
+  const avail = phase.attacks.filter((a) => b.cds[a] <= 0);
+  if (b.idle <= 0 && avail.length > 0) {
+    // prefer attacks whose range covers the player; else any
+    const inRange = avail.filter((a) => b.def.attacks[a].range >= dist * 0.85);
+    const pool = inRange.length > 0 ? inRange : avail;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    b.state = 'windup';
+    b.current = pick;
+    b.telegraph = b.def.attacks[pick].telegraph;
+    b.idle = 0.55;
+    if (pick === 'MeteorDrop') b.targetPos = G.pos.clone();
+  }
+}
+
+function executeBossAttack(b: Boss, dmg: number, range: number) {
+  const atk = b.current;
+  const dist = b.group.position.distanceTo(G.pos);
+  const p = b.group.position;
+  if (atk === 'SeatSwing' || atk === 'Lurch' || atk === 'SmearSlap') {
+    if (dist < range) damagePlayer(dmg, true);
+    burst(p.clone().setY(1.4), b.def.color, 10, 4, 0.4, 0.1);
+  } else if (atk === 'SeatSlam' || atk === 'BodySlam' || atk === 'CorePulse') {
+    if (dist < range) damagePlayer(dmg, true);
+    burst(p.clone().setY(0.5), b.def.color, 20, 6, 0.6, 0.12);
+  } else if (atk === 'Spin') {
+    if (dist < range + 0.6) damagePlayer(dmg, true);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      burst(p.clone().add(new THREE.Vector3(Math.cos(a) * 1.4, 1.2, Math.sin(a) * 1.4)), b.def.color, 3, 5, 0.5, 0.08);
+    }
+  } else if (atk === 'MeteorDrop') {
+    if (b.targetPos && G.pos.distanceTo(b.targetPos) < 2.4) damagePlayer(dmg, false);
+    burst((b.targetPos ?? p).clone().setY(0.5), 0x5a4632, 26, 6, 0.8, 0.16);
+    b.targetPos = null;
+  } else if (atk === 'GasCloud') {
+    spawnCloud(p, 3, 4, dmg);
+  } else if (atk === 'BloatCharge') {
+    const dir = new THREE.Vector3(G.pos.x - p.x, 0, G.pos.z - p.z).normalize();
+    b.charge = { dir, t: 1.1 };
+  } else if (atk === 'WallOfFilth') {
+    const rot = Math.atan2(b.group.position.x - G.pos.x, b.group.position.z - G.pos.z);
+    const wallPos = G.pos.clone().add(new THREE.Vector3(0, 0, 0));
+    spawnWall(wallPos, rot, 2.6, dmg);
+  } else if (atk === 'PrimordialRoar') {
+    if (dist < range) damagePlayer(dmg, false);
+    burst(p.clone().setY(2), b.def.color, 30, 8, 0.7, 0.14);
+    SFX.bossRoar();
+  }
+}
+
+// ============================== interact / shrine ==============================
+function nearestInteractable(): { kind: string; d: number } | null {
+  const zb = G.zoneBuild;
+  if (!zb) return null;
+  let best: { kind: string; d: number } | null = null;
+  for (const it of zb.interactables) {
+    const d = G.pos.distanceTo(it.pos);
+    if (d < it.radius && (!best || d < best.d)) best = { kind: it.kind, d };
+  }
+  return best;
+}
+
+function doInteract() {
+  const hit = nearestInteractable();
+  if (!hit) return;
+  if (hit.kind === 'bonfire') {
+    G.hp = hpMax();
+    G.stamina = stMax();
+    SFX.bonfire();
+    toast('RESTED. FULLY CLEANSED.', 1.4);
+    const zb = G.zoneBuild!;
+    const fire = zb.interactables.find((i) => i.kind === 'bonfire');
+    if (fire) burst(fire.pos.clone().setY(1.4), 0xffa030, 16, 3, 0.7, 0.08);
+    save();
+  } else if (hit.kind === 'shrine') {
+    openShrine();
+  } else if (hit.kind === 'bossDoor') {
+    if (!G.bossActive && !G.boss && !G.save.bossesDefeated[G.zone]) startBoss();
+    else if (G.save.bossesDefeated[G.zone]) toast('The door is open. The way ahead is cleared.', 1.6);
+  }
+}
+
+function openShrine() {
+  G.mode = 'shrine';
+  SFX.ui();
+  renderShrine();
+}
+function closeShrine() {
+  G.mode = 'play';
+  SFX.ui();
+}
+function renderShrine() {
+  const s = G.save.stats;
+  const set = (idV: string, idC: string, idB: string, val: number, key: 'v' | 'e' | 's' | 'c') => {
+    $(idV).textContent = String(val);
+    const cost = statCost(val);
+    const can = val < STAT_MAX && G.save.souls >= cost;
+    $(idC).textContent = val >= STAT_MAX ? 'MAX' : `${cost} souls`;
+    ($(idB) as HTMLButtonElement).disabled = !can;
+    ($(idB) as HTMLButtonElement).onclick = () => {
+      if (val < STAT_MAX && G.save.souls >= cost) {
+        G.save.souls -= cost;
+        G.save.stats[key] = val + 1;
+        G.hp = Math.min(G.hp + (key === 'v' ? 9 : 0), hpMax());
+        G.stamina = Math.min(G.stamina + (key === 'e' ? 5 : 0), stMax());
+        SFX.levelUp();
+        toast('STAT RAISED', 1);
+        renderShrine();
+        save();
+      }
+    };
+  };
+  set('vVal', 'vCost', 'btnV', s.v, 'v');
+  set('eVal', 'eCost', 'btnE', s.e, 'e');
+  set('sVal', 'sCost', 'btnS', s.s, 's');
+  set('cVal', 'cCost', 'btnC', s.c, 'c');
+  // forge
+  const w = WEAPONS[G.weaponIdx];
+  const tier = G.save.weaponTiers[G.weaponIdx];
+  $('upName').textContent = `${w.emoji} ${w.name}`;
+  $('upTier').textContent = `+${tier}${tier >= MAX_TIER ? '' : ' → +' + (tier + 1)}`;
+  const gcost = gritForTier(tier);
+  const canForge = tier < MAX_TIER && G.save.grit >= gcost;
+  $('upCost').textContent = tier >= MAX_TIER ? 'MAX' : `${gcost} grit`;
+  ($('btnUp') as HTMLButtonElement).disabled = !canForge;
+  ($('btnUp') as HTMLButtonElement).onclick = () => {
+    if (tier < MAX_TIER && G.save.grit >= gcost) {
+      G.save.grit -= gcost;
+      G.save.weaponTiers[G.weaponIdx] = tier + 1;
+      SFX.levelUp();
+      toast(`FORGED +${tier + 1}`, 1.2);
+      renderShrine();
+      save();
+    }
+  };
+  $('shSouls').textContent = String(G.save.souls);
+  $('shGrit').textContent = String(G.save.grit);
+}
+
+// ============================== save / load ==============================
+function save() {
+  try {
+    G.save.level = levelOf();
+    localStorage.setItem(SAVE_KEY, JSON.stringify(G.save));
+  } catch { /* ignore */ }
+}
+function loadSave(): SaveData | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as SaveData;
+    if (typeof s.souls !== 'number' || !s.stats) return null;
+    return s;
+  } catch { return null; }
+}
+function newGame() {
+  G.save = defaultSave();
+  G.kills = 0; G.deaths = 0; G.soulsEarned = 0; G.runT = 0;
+  SFX.unlock();
+  loadZone(0);
+  G.mode = 'play';
+  toast('THE PORCELAIN HOLLOW', 2);
+}
+function continueGame() {
+  const s = loadSave();
+  if (!s) return;
+  G.save = s;
+  SFX.unlock();
+  loadZone(s.zone);
+  G.mode = 'play';
+  toast(ZONES[s.zone].name.toUpperCase(), 2);
+}
+function refreshTitle() {
+  const s = loadSave();
+  const btn = $('btnContinue') as HTMLButtonElement;
+  const info = $('contInfo');
+  if (s) {
+    btn.disabled = false;
+    const done = s.bossesDefeated.filter(Boolean).length;
+    info.textContent = `LV ${levelOfFromSave(s)} · ${ZONES[s.zone].name} · ${done}/3 bosses`;
+  } else {
+    btn.disabled = true;
+    info.textContent = 'No previous ascension found.';
+  }
+}
+function levelOfFromSave(s: SaveData): number {
+  return (s.stats.v - 1) + (s.stats.e - 1) + (s.stats.s - 1) + (s.stats.c - 1) + 1;
+}
+
+// ============================== input ==============================
+let mouseDown = false;
+window.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === ' ') { spaceQueued = true; e.preventDefault(); }
+  keys[k] = true;
+  if (k === 'e') {
+    if (G.mode === 'play') doInteract();
+    else if (G.mode === 'shrine') closeShrine();
+    else if (G.mode === 'over') resurrect();
+  }
+  if (k === 'q') {
+    if (G.mode === 'play') switchWeapon((G.weaponIdx + 1) % WEAPONS.length);
+  }
+  if (['1', '2', '3', '4'].includes(k)) {
+    if (G.mode === 'play') switchWeapon(parseInt(k, 10) - 1);
+  }
+});
+window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 0) {
+    mouseDown = true;
+    if (G.mode === 'play' && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+  }
+  if (e.button === 2) {
+    if (G.mode === 'play') {
+      G.blockHeld = true;
+      G.blockStart = G.time;
+    }
+  }
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) mouseDown = false;
+  if (e.button === 2) G.blockHeld = false;
+});
+window.addEventListener('contextmenu', (e) => { if (G.mode === 'play') e.preventDefault(); });
+window.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement === canvas) {
+    G.camYawT -= e.movementX * 0.0026;
+    G.camPitchT = THREE.MathUtils.clamp(G.camPitchT + e.movementY * 0.0022, 0.12, 1.15);
+  }
+});
+window.addEventListener('wheel', (e) => {
+  if (document.pointerLockElement === canvas) {
+    G.camDistT = THREE.MathUtils.clamp(G.camDistT + e.deltaY * 0.005, 4, 11);
+  }
+});
+
+// buttons
+($('btnNew') as HTMLButtonElement).onclick = () => { panelTitle.style.display = 'none'; newGame(); };
+($('btnContinue') as HTMLButtonElement).onclick = () => { const s = loadSave(); if (s) { panelTitle.style.display = 'none'; continueGame(); } };
+($('btnRespawn') as HTMLButtonElement).onclick = () => { panelOver.style.display = 'none'; resurrect(); };
+($('btnCloseShrine') as HTMLButtonElement).onclick = () => { panelShrine.style.display = 'none'; closeShrine(); };
+($('btnAgain') as HTMLButtonElement).onclick = () => { panelWin.style.display = 'none'; panelTitle.style.display = 'none'; newGame(); refreshTitle(); };
+
+// ============================== HUD sync ==============================
+function syncUI(dt: number) {
+  if (toastTimer > 0) {
+    toastTimer -= dt;
+    if (toastTimer <= 0) elToast.style.opacity = '0';
+  }
+  if (G.cinematic) {
+    elHud.style.display = 'none';
+    elHudRight.style.display = 'none';
+    elInteract.style.display = 'none';
+    elHint.style.display = 'none';
+    // boss bar stays — it's the signature
+    if (G.boss && G.bossActive) {
+      elBossWrap.style.display = 'block';
+      elBossName.textContent = `${G.boss.def.name} — ${G.boss.def.title}`;
+      elBossBar.style.width = `${Math.max(0, G.boss.hp / G.boss.def.hp) * 100}%`;
+    } else elBossWrap.style.display = 'none';
+    return;
+  }
+  elHud.style.display = '';
+  elHudRight.style.display = '';
+  const hpF = Math.max(0, G.hp / hpMax());
+  elHp.style.width = `${hpF * 100}%`;
+  elHpVal.textContent = String(Math.ceil(G.hp));
+  const stF = Math.max(0, G.stamina / stMax());
+  elSt.style.width = `${stF * 100}%`;
+  elStVal.textContent = String(Math.ceil(G.stamina));
+  elLvl.textContent = String(levelOf());
+  elSouls.textContent = String(G.save.souls);
+  elGrit.textContent = String(G.save.grit);
+  const w = WEAPONS[G.weaponIdx];
+  elWeapon.textContent = `${w.emoji} ${w.name} +${G.save.weaponTiers[G.weaponIdx]}`;
+  elZone.textContent = ZONES[G.zone].name;
+  // boss bar
+  if (G.boss && G.bossActive) {
+    elBossWrap.style.display = 'block';
+    elBossName.textContent = `${G.boss.def.name} — ${G.boss.def.title}`;
+    elBossBar.style.width = `${Math.max(0, G.boss.hp / G.boss.def.hp) * 100}%`;
+    const frac = G.boss.hp / G.boss.def.hp;
+    const phase = G.boss.def.phases.find((p) => p.hpFrac >= frac);
+    const idx = G.boss.def.phases.indexOf(phase ?? G.boss.def.phases[0]);
+    elBossSub.textContent = `PHASE ${G.boss.def.phases.length - idx} / ${G.boss.def.phases.length}`;
+  } else {
+    elBossWrap.style.display = 'none';
+  }
+  // interact hint
+  if (G.mode === 'play') {
+    const hit = nearestInteractable();
+    if (hit) {
+      elInteract.style.display = 'block';
+      elInteract.textContent = hit.kind === 'bonfire' ? 'E — REST AT BONFIRE' : hit.kind === 'shrine' ? 'E — SHRINE OF THE GREAT FLUSH' : (!G.save.bossesDefeated[G.zone] && !G.bossActive ? 'E — FACE THE BOSS' : '');
+      if (!elInteract.textContent) elInteract.style.display = 'none';
+    } else elInteract.style.display = 'none';
+  } else elInteract.style.display = 'none';
+  // panels
+  panelShrine.style.display = G.mode === 'shrine' ? 'flex' : 'none';
+  panelOver.style.display = G.mode === 'over' ? 'flex' : 'none';
+  panelWin.style.display = G.mode === 'win' ? 'flex' : 'none';
+}
+
+// ============================== camera ==============================
+function updateCamera(dt: number) {
+  if (G.mode === 'title') G.camYawT += dt * 0.12;
+  const t = 1 - Math.exp(-9 * dt);
+  G.camYaw += (G.camYawT - G.camYaw) * t;
+  G.camPitch += (G.camPitchT - G.camPitch) * t;
+  G.camDist += (G.camDistT - G.camDist) * t;
+  const eye = G.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
+  const off = new THREE.Vector3(
+    -Math.sin(G.camYaw) * Math.cos(G.camPitch),
+    Math.sin(G.camPitch),
+    -Math.cos(G.camYaw) * Math.cos(G.camPitch),
+  ).multiplyScalar(G.camDist);
+  const target = eye.clone().add(off);
+  target.y = Math.max(0.4, target.y);
+  camera.position.copy(target);
+  camera.lookAt(G.pos.clone().add(new THREE.Vector3(0, 1.3, 0)));
+}
+
+// ============================== debug hooks ==============================
+window.__game = {
+  state: () => ({
+    mode: G.mode,
+    hp: G.hp, maxHp: hpMax(), stamina: G.stamina, maxStamina: stMax(),
+    souls: G.save.souls, grit: G.save.grit,
+    zone: G.zone, zoneName: ZONES[G.zone].name,
+    weapon: G.weaponIdx, weaponTier: G.save.weaponTiers[G.weaponIdx],
+    weaponName: WEAPONS[G.weaponIdx].name,
+    kills: G.kills, deaths: G.deaths, level: levelOf(),
+    mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp) })),
+    boss: G.boss ? { active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp, state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10 } : null,
+    orbSouls: G.orb ? G.orb.souls : 0,
+    gritDrops: G.gritDrops.length,
+    iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
+    stats: { ...G.save.stats },
+    pos: { x: Math.round(G.pos.x * 10) / 10, z: Math.round(G.pos.z * 10) / 10 },
+  }),
+  newGame,
+  continueGame,
+  loadZone,
+  weapon: (i: number) => switchWeapon(i),
+  attack: () => startAttack(),
+  dodge: () => { spaceQueued = true; updatePlayer(0.016); },
+  damagePlayer: (n: number, melee = true) => damagePlayer(n, melee),
+  parryHit: (n: number) => { G.blockHeld = true; G.blockStart = G.time; damagePlayer(n, true); G.blockHeld = false; },
+  orb: (n: number) => { dropSouls(G.pos.clone().add(new THREE.Vector3(0.8, 0, 0)), n); },
+  grit: (n: number) => dropGrit(G.pos.clone().add(new THREE.Vector3(-0.8, 0, 0)), n),
+  spawnMob: (id: string) => {
+    const def = MOBS[id];
+    if (def) spawnMob(def, G.pos.clone().add(new THREE.Vector3(2.5, 0, 0)));
+  },
+  startBoss,
+  hitBoss: (n: number) => { if (G.boss) { G.boss.hp -= n; if (G.boss.hp <= 0) bossDefeated(); } },
+  killBoss: () => { if (G.boss) { G.boss.hp = 0.001; } if (G.boss) bossDefeated(); },
+  nearBoss: () => {
+    if (G.boss) {
+      const p = G.boss.group.position;
+      G.pos.set(p.x, 0, p.z + 5);
+      G.yaw = Math.atan2(-G.pos.x + p.x, -G.pos.z + p.z);
+      G.hitstun = 0; G.atk = null;
+    }
+  },
+  setHp: (n: number) => { G.hp = Math.max(1, Math.min(hpMax(), n)); },
+  setBossHp: (n: number) => { if (G.boss) G.boss.hp = Math.max(1, Math.min(G.boss.def.hp, n)); },
+  resurrect,
+  openShrine,
+  cinematic: (v: boolean) => { G.cinematic = v; },
+};
+
+// ============================== main loop ==============================
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  G.time += dt;
+  if (G.mode === 'play') G.runT += dt;
+  if (G.mode === 'play') {
+    updatePlayer(dt);
+    updateMobs(dt);
+    updateBoss(dt);
+    updateProjectiles(dt);
+    updateHazards(dt);
+    // shrine bowl pulse
+    const zb = G.zoneBuild;
+    if (zb) {
+      const shrine = zb.interactables.find((i) => i.kind === 'shrine');
+      if (shrine && shrine.object.userData.bowlMat) {
+        (shrine.object.userData.bowlMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.7 + Math.sin(G.time * 2) * 0.25;
+      }
+    }
+  }
+  updateParticles(dt);
+  updateDrops(dt);
+  updateCamera(dt);
+  syncUI(dt);
+  renderer.render(scene, camera);
+}
+
+// ============================== boot ==============================
+function boot() {
+  // title: build zone 0 behind the menu, sim paused
+  loadZone(0);
+  G.mode = 'title';
+  panelTitle.style.display = 'flex';
+  refreshTitle();
+  frame();
+}
+boot();

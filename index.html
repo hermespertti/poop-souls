@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>POOP SOULS — A Dark Bowels Legend</title>
+<meta property="og:title" content="POOP SOULS — A Dark Bowels Legend" />
+<meta property="og:description" content="A soulslike where the Throne must be cleansed. Three zones, three bosses, weapon forges, real death." />
+<meta property="og:image" content="https://hermespertti.github.io/poop-souls/og-image.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<style>
+  :root { --bg: #0a0b0e; --panel: #12141a; --line: #2a2e38; --txt: #d8d4c8; --dim: #7a7e88; --hp: #c23b3b; --st: #4faa55; --soul: #7fb8ff; --grit: #d8a24a; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); font-family: "DejaVu Sans Mono", "Courier New", monospace; color: var(--txt); }
+  canvas { display: block; }
+  #hud { position: fixed; top: 14px; left: 14px; z-index: 5; pointer-events: none; text-shadow: 0 1px 3px #000; }
+  #zoneName { font-size: 13px; letter-spacing: 2px; color: var(--dim); margin-bottom: 6px; text-transform: uppercase; }
+  .bar { width: 230px; height: 13px; background: #000a; border: 1px solid var(--line); margin-bottom: 5px; position: relative; }
+  .bar > i { display: block; height: 100%; transition: width 0.12s; }
+  #hpBar > i { background: var(--hp); }
+  #stBar > i { background: var(--st); }
+  .bar > b { position: absolute; right: 4px; top: -1px; font-size: 9px; color: #fff; font-weight: normal; }
+  #hudRow { font-size: 12px; margin-top: 4px; }
+  #hudRight { position: fixed; top: 14px; right: 14px; z-index: 5; text-align: right; pointer-events: none; text-shadow: 0 1px 3px #000; font-size: 13px; line-height: 1.7; }
+  #soulsVal { color: var(--soul); } #gritVal { color: var(--grit); }
+  #bossWrap { position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%); z-index: 5; width: min(620px, 70vw); text-align: center; display: none; text-shadow: 0 1px 3px #000; }
+  #bossName { font-size: 15px; letter-spacing: 3px; margin-bottom: 5px; }
+  #bossBar { width: 100%; height: 10px; background: #000a; border: 1px solid var(--line); }
+  #bossBar > i { display: block; height: 100%; background: #a83aa8; }
+  #bossSub { font-size: 10px; color: var(--dim); margin-top: 3px; }
+  #interact { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%); z-index: 5; font-size: 13px; background: #000c; border: 1px solid var(--line); padding: 5px 14px; display: none; }
+  #hint { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5; font-size: 11px; color: var(--dim); background: #0009; padding: 4px 12px; white-space: nowrap; }
+  #toast { position: fixed; top: 18%; left: 50%; transform: translateX(-50%); z-index: 8; font-size: 22px; letter-spacing: 4px; color: #fff; text-shadow: 0 0 12px #000, 0 1px 3px #000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .panel { position: fixed; inset: 0; z-index: 10; background: #07080bd9; display: none; align-items: center; justify-content: center; flex-direction: column; text-align: center; }
+  .panel h1 { font-size: 46px; letter-spacing: 8px; margin-bottom: 8px; }
+  .panel h2 { font-size: 26px; letter-spacing: 4px; margin-bottom: 8px; }
+  .panel .sub { color: var(--dim); font-size: 13px; margin-bottom: 22px; line-height: 1.7; }
+  .btn { pointer-events: auto; cursor: pointer; font-family: inherit; font-size: 14px; letter-spacing: 2px; color: var(--txt); background: var(--panel); border: 1px solid var(--line); padding: 10px 26px; margin: 4px; }
+  .btn:hover { background: #1c2029; border-color: #4a5060; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.small { font-size: 12px; padding: 6px 12px; }
+  #shrineBox { width: min(560px, 90vw); background: var(--panel); border: 1px solid var(--line); padding: 22px 26px; text-align: left; }
+  #shrineBox h2 { text-align: center; letter-spacing: 4px; margin-bottom: 4px; }
+  #shrineBox .note { text-align: center; color: var(--dim); font-size: 11px; margin-bottom: 14px; }
+  .srow { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 6px 0; border-bottom: 1px solid #1c2028; }
+  .srow .name { width: 110px; } .srow .val { width: 60px; color: var(--txt); } .srow .cost { width: 110px; color: var(--soul); font-size: 11px; text-align: right; margin-right: 10px; }
+  #upRow { margin-top: 14px; }
+  #winStats { font-size: 13px; color: var(--dim); line-height: 2; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" style="position:fixed;inset:0;width:100%;height:100%;display:block"></canvas>
+<div id="hud">
+  <div id="zoneName">—</div>
+  <div class="bar" id="hpBar"><i></i><b id="hpVal"></b></div>
+  <div class="bar" id="stBar"><i></i><b id="stVal"></b></div>
+  <div id="hudRow">LV <span id="lvlVal">1</span></div>
+</div>
+<div id="hudRight">
+  <div>☄ <span id="soulsVal">0</span> souls</div>
+  <div>⛏ <span id="gritVal">0</span> grit</div>
+  <div id="weaponName">—</div>
+</div>
+<div id="bossWrap"><div id="bossName"></div><div id="bossBar"><i></i></div><div id="bossSub"></div></div>
+<div id="interact"></div>
+<div id="hint">WASD move · mouse aim · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · E interact</div>
+<div id="toast"></div>
+
+<div class="panel" id="panelTitle">
+  <h1>POOP SOULS</h1>
+  <div class="sub">A DARK BOWELS LEGEND<br>The Throne must be cleansed. Death is real. So is the smell.</div>
+  <div>
+    <button class="btn" id="btnNew">NEW GAME</button>
+    <button class="btn" id="btnContinue">CONTINUE</button>
+  </div>
+  <div class="sub" id="contInfo" style="margin-top:16px"></div>
+</div>
+
+<div class="panel" id="panelShrine">
+  <div id="shrineBox">
+    <h2>SHRINE OF THE GREAT FLUSH</h2>
+    <div class="note">Bonfire. You heal. The dead rise again. Souls spend here are kept forever.</div>
+    <div class="srow"><span class="name">VIGOR</span><span class="val" id="vVal"></span><span class="cost" id="vCost"></span><button class="btn small" id="btnV">+1</button></div>
+    <div class="srow"><span class="name">ENDURANCE</span><span class="val" id="eVal"></span><span class="cost" id="eCost"></span><button class="btn small" id="btnE">+1</button></div>
+    <div class="srow"><span class="name">STRENGTH</span><span class="val" id="sVal"></span><span class="cost" id="sCost"></span><button class="btn small" id="btnS">+1</button></div>
+    <div class="srow"><span class="name">COMPOSURE</span><span class="val" id="cVal"></span><span class="cost" id="cCost"></span><button class="btn small" id="btnC">+1</button></div>
+    <div class="srow" id="upRow"><span class="name" id="upName"></span><span class="val" id="upTier"></span><span class="cost" id="upCost"></span><button class="btn small" id="btnUp">FORGE</button></div>
+    <div style="text-align:right;margin-top:14px"><button class="btn small" id="btnCloseShrine">CLOSE (E)</button></div>
+    <div class="note" style="margin-top:10px">Souls: <span id="shSouls" style="color:var(--soul)"></span> · Grit: <span id="shGrit" style="color:var(--grit)"></span></div>
+  </div>
+</div>
+
+<div class="panel" id="panelOver">
+  <h1>YOU DIED</h1>
+  <div class="sub" id="overSub"></div>
+  <button class="btn" id="btnRespawn">RESURRECT AT BONFIRE (E)</button>
+</div>
+
+<div class="panel" id="panelWin">
+  <h1>THE THRONE IS CLEANSED</h1>
+  <div id="winStats"></div>
+  <button class="btn" id="btnAgain">NEW GAME</button>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
