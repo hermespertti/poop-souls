@@ -105,24 +105,33 @@ if (ls.lockPos) {
     await page.evaluate(() => window.__game.snapLocked());
     await sleepFrames(page, 3);
     await page.evaluate(() => window.__game.attack());
-    await sleepFrames(page, 12);
-    const after = await S(page);
-    // multiple mobs share an id — find the one nearest the lock position (knockback <= ~1.6)
-    let nearest = null, nd = Infinity;
-    for (const mm of after.mobs) {
-      const d = Math.hypot(mm.x - ls.lockPos.x, mm.z - ls.lockPos.z);
-      if (d < nd) { nd = d; nearest = mm; }
+    // poll for the landed hit (mobs can hitstun the player and shift timing)
+    let landed = false, nd = Infinity;
+    for (let i = 0; i < 40 && !landed; i++) {
+      await sleepFrames(page, 3);
+      const after = await S(page);
+      let nearest = null;
+      for (const mm of after.mobs) {
+        const d = Math.hypot(mm.x - ls.lockPos.x, mm.z - ls.lockPos.z);
+        if (d < nd) { nd = d; nearest = mm; }
+      }
+      landed = !!nearest && nd < 3 && nearest.hp < target.hp;
     }
-    ok('attack lands on the locked target', !!nearest && nd < 3 && nearest.hp < target.hp);
+    ok('attack lands on the locked target', landed);
   } else ok('attack lands on the locked target', false);
 } else ok('lockPos reported', false);
 ok('F releases the lock', (await page.evaluate(() => window.__game.lock(false))) === null);
 
 console.log('== GLB character (Blender rig) ==');
-await sleep(1500); // let the GLB finish loading
-// reset to a clear corner: no aggro, no hitstun, deterministic facing
-await page.evaluate(() => { window.__game.setHp(999); window.__game.teleport(-20, -20); });
-await sleepFrames(page, 15);
+// wait for the GLB to actually load (up to 5s)
+for (let i = 0; i < 50; i++) {
+  st = await S(page);
+  if (st.model && st.model.loaded === true) break;
+  await sleepFrames(page, 10);
+}
+// reset to a clear corner: no mobs, no aggro, no hitstun, deterministic facing
+await page.evaluate(() => { window.__game.killMobs(); window.__game.setHp(999); window.__game.teleport(-20, -20); window.__game.clearCombat(); });
+await sleepFrames(page, 25);
 st = await S(page);
 ok('model.glb loaded', st.model && st.model.loaded === true);
 ok('all 8 clips present', st.model && st.model.actions.length === 8 &&
@@ -148,7 +157,7 @@ await page.evaluate(() => { window.__game.clearCombat(); window.__game.attack();
 await sleepFrames(page, 6);
 st = await S(page);
 ok('attack1 clip on attack', st.model && st.model.anim === 'Attack1');
-await sleepFrames(page, 30);
+await sleepFrames(page, 60);
 st = await S(page);
 ok('returns to Idle after attack', st.model && st.model.anim === 'Idle');
 

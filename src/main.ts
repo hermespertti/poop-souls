@@ -1521,6 +1521,11 @@ window.__game = {
     const def = MOBS[id];
     if (def) spawnMob(def, G.pos.clone().add(new THREE.Vector3(2.5, 0, 0)));
   },
+  killMobs: () => {
+    for (const m of G.mobs) { if (!m.dead) { m.dead = true; scene.remove(m.group); } }
+    G.mobs.length = 0;
+    G.locked = null;
+  },
   startBoss,
   hitBoss: (n: number) => { if (G.boss) { G.boss.hp -= n; if (G.boss.hp <= 0) bossDefeated(); } },
   killBoss: () => { if (G.boss) { G.boss.hp = 0.001; } if (G.boss) bossDefeated(); },
