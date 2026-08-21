@@ -20,6 +20,8 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 const errors = [];
+const notFound = new Set();
+page.on('response', (r) => { if (r.status() === 404) notFound.add(r.url()); });
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
 
@@ -65,6 +67,56 @@ for (let i = 0; i < 8; i++) { await page.evaluate(() => window.__game.attack());
 const allAfter = (await S(page)).mobs.map((m) => m.hp).reduce((a, b) => a + b, 0);
 ok('attacks deal damage to nearby mobs', allAfter < allBefore);
 ok('stamina consumed by attacks', (await S(page)).stamina < (await S(page)).maxStamina);
+
+console.log('== movement & camera (Dark Souls style) ==');
+await page.evaluate(() => window.__game.setHp(999)); // survive any aggro swats during the test
+const m0 = await S(page);
+await page.keyboard.down('KeyW');
+await sleepFrames(page, 30);
+await page.keyboard.up('KeyW');
+const m1 = await S(page);
+const mdx = m1.pos.x - m0.pos.x, mdz = m1.pos.z - m0.pos.z;
+const moved = Math.hypot(mdx, mdz);
+ok('W moves the player', moved > 0.5);
+// camera-relative: delta aligns with camera forward (player minus camera, horizontal)
+const cfx = m1.pos.x - m1.cam.x, cfz = m1.pos.z - m1.cam.z;
+const cfLen = Math.hypot(cfx, cfz);
+const alignDot = cfLen > 0.1 && moved > 0.05 ? (mdx * cfx + mdz * cfz) / (moved * cfLen) : 0;
+ok('movement is camera-relative (W goes where the camera looks)', alignDot > 0.85);
+// camera follows the player
+const camMoved = Math.hypot(m1.cam.x - m0.cam.x, m1.cam.z - m0.cam.z);
+ok('camera follows the player', camMoved > moved * 0.5);
+// character smoothly turned to face travel direction (no spiral spin)
+const travelYaw = Math.atan2(mdx, mdz);
+let yawErr = Math.abs(m1.yaw - travelYaw) % (Math.PI * 2);
+if (yawErr > Math.PI) yawErr = Math.PI * 2 - yawErr;
+ok('character faces travel direction (smooth turn, no spin)', yawErr < 0.35);
+
+console.log('== lock-on (F) ==');
+await page.evaluate(() => window.__game.spawnMob('biber'));
+await sleepFrames(page, 5);
+const lockId = await page.evaluate(() => window.__game.lock(true));
+const ls = await S(page);
+ok('lock-on acquires a target', typeof lockId === 'string' && ls.locked === lockId);
+if (ls.lockPos) {
+  const target = ls.mobs.find((mm) => mm.x === ls.lockPos.x && mm.z === ls.lockPos.z);
+  if (target) {
+    // deterministic: snap player 2 units from the locked target, then swing
+    await page.evaluate(() => window.__game.snapLocked());
+    await sleepFrames(page, 3);
+    await page.evaluate(() => window.__game.attack());
+    await sleepFrames(page, 12);
+    const after = await S(page);
+    // multiple mobs share an id — find the one nearest the lock position (knockback <= ~1.6)
+    let nearest = null, nd = Infinity;
+    for (const mm of after.mobs) {
+      const d = Math.hypot(mm.x - ls.lockPos.x, mm.z - ls.lockPos.z);
+      if (d < nd) { nd = d; nearest = mm; }
+    }
+    ok('attack lands on the locked target', !!nearest && nd < 3 && nearest.hp < target.hp);
+  } else ok('attack lands on the locked target', false);
+} else ok('lockPos reported', false);
+ok('F releases the lock', (await page.evaluate(() => window.__game.lock(false))) === null);
 
 console.log('== weapon switching ==');
 await page.evaluate(() => window.__game.weapon(1));
@@ -178,7 +230,10 @@ console.log('== save persistence ==');
 ok('localStorage save exists', await page.evaluate(() => !!localStorage.getItem('poop-souls-save-v1')));
 
 await browser.close();
-const realErrors = errors.filter((e) => !e.includes('favicon'));
+// a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
+const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));
+const realErrors = errors.filter((e) => !(e.startsWith('console:') && e.includes('404') && nonFavicon404.length === 0));
 console.log(`\nRESULT: ${pass} pass / ${fail} fail`);
 console.log('page errors:', realErrors.length ? realErrors : 'none');
-process.exit(fail > 0 || realErrors.length > 0 ? 1 : 0);
+console.log('404 urls:', nonFavicon404.length ? nonFavicon404 : '(favicon only)');
+process.exit(fail > 0 || realErrors.length > 0 || nonFavicon404.length > 0 ? 1 : 0);

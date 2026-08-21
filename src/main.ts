@@ -21,12 +21,14 @@ interface Mob {
   def: MobDef; group: THREE.Group; mat: THREE.MeshStandardMaterial;
   hp: number; home: THREE.Vector3; cd: number; telegraph: number; telegraphTotal: number;
   hitstun: number; phase: number; aggroed: boolean; dead: boolean; hasSplit: boolean; baseY: number;
+  stunFrom: THREE.Vector3 | null;
 }
 interface Boss {
   def: BossDef; group: THREE.Group; mat: THREE.MeshStandardMaterial; hp: number;
   state: 'idle' | 'windup'; cds: Record<string, number>; current: string; telegraph: number;
-  hitstop: number; idle: number; charge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
-  phase: number;
+  hitstop: number; idle: number; charge: { dir: THREE.Vector3; t: number; dmg: number } | null;
+  lunge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
+  baseY: number; phase: number;
 }
 interface Particle { obj: THREE.Mesh; vel: THREE.Vector3; life: number; max: number; grav: number; }
 interface Proj { obj: THREE.Mesh; dir: THREE.Vector3; speed: number; life: number; dmg: number; radius: number; }
@@ -67,6 +69,9 @@ const G = {
   time: 0, runT: 0, kills: 0, deaths: 0, soulsEarned: 0,
   camYaw: 0.8, camPitch: 0.42, camYawT: 0.8, camPitchT: 0.42, camDist: 7, camDistT: 7,
   cinematic: false,
+  locked: null as (Mob | Boss) | null,
+  animPhase: 0,
+  moveAmt: 0,
 };
 
 const hpMax = () => hpFor(G.save.stats.v);
@@ -127,20 +132,42 @@ window.addEventListener('resize', () => {
 
 // ============================== player model ==============================
 const player = new THREE.Group();
+const bodyRoot = new THREE.Group();
+player.add(bodyRoot);
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x4a6a8a, roughness: 0.6 });
+const legL = new THREE.Group();
+const legR = new THREE.Group();
+const armL = new THREE.Group();
+const armR = new THREE.Group();
 {
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.55, 4, 10), new THREE.MeshStandardMaterial({ color: 0x4a6a8a, roughness: 0.6 }));
-  body.position.y = 0.75;
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.5, 4, 10), bodyMat);
+  body.position.y = 0.78;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), new THREE.MeshStandardMaterial({ color: 0xd8b89a, roughness: 0.7 }));
   head.position.y = 1.45;
   const eyeGeo = new THREE.SphereGeometry(0.035, 6, 6);
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
   const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.08, 1.48, 0.18);
   const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.08, 1.48, 0.18);
-  player.add(body, head, eyeL, eyeR);
+  // limbs — pivots at hip/shoulder so the walk cycle can swing them
+  const legGeo = new THREE.CapsuleGeometry(0.1, 0.42, 4, 8);
+  const legMat = new THREE.MeshStandardMaterial({ color: 0x37516b, roughness: 0.7 });
+  const mkLeg = (pivot: THREE.Group, sx: number) => {
+    const m = new THREE.Mesh(legGeo, legMat); m.position.y = -0.31;
+    pivot.add(m); pivot.position.set(0.13 * sx, 0.55, 0); bodyRoot.add(pivot);
+  };
+  mkLeg(legL, -1); mkLeg(legR, 1);
+  const armGeo = new THREE.CapsuleGeometry(0.08, 0.34, 4, 8);
+  const armMat = new THREE.MeshStandardMaterial({ color: 0x5a7a9a, roughness: 0.7 });
+  const mkArm = (pivot: THREE.Group, sx: number) => {
+    const m = new THREE.Mesh(armGeo, armMat); m.position.y = -0.27;
+    pivot.add(m); pivot.position.set(0.34 * sx, 1.06, 0); bodyRoot.add(pivot);
+  };
+  mkArm(armL, -1); mkArm(armR, 1);
+  bodyRoot.add(body, head, eyeL, eyeR);
 }
 const weaponPivot = new THREE.Group();
-weaponPivot.position.set(0.38, 0.72, 0.3);
-player.add(weaponPivot);
+weaponPivot.position.set(0.02, -0.34, 0.16); // right hand
+armR.add(weaponPivot);
 scene.add(player);
 
 function buildWeaponMesh(idx: number): THREE.Group {
@@ -274,7 +301,7 @@ function spawnMob(def: MobDef, pos: THREE.Vector3): Mob {
   const m: Mob = {
     def, group, mat, hp: def.hp, home: pos.clone(), cd: 0.5 + Math.random() * 1.5,
     telegraph: 0, telegraphTotal: 1, hitstun: 0, phase: Math.random() * 6.28,
-    aggroed: false, dead: false, hasSplit: false, baseY: 0,
+    aggroed: false, dead: false, hasSplit: false, baseY: 0, stunFrom: null,
   };
   G.mobs.push(m);
   return m;
@@ -308,8 +335,14 @@ function updateMobs(dt: number) {
     const dz = G.pos.z - m.group.position.z;
     const dist = Math.hypot(dx, dz);
     if (m.hitstun > 0) {
+      if (!m.stunFrom) m.stunFrom = m.group.position.clone();
       m.hitstun -= dt;
+      const f = 1 - m.hitstun / HITSTUN;
+      // flinch: kick away from player + stagger spin, springs back to where it stood
+      const away = m.group.position.clone().sub(G.pos).setY(0).normalize();
+      m.group.position.copy(m.stunFrom.clone().addScaledVector(away, Math.sin(Math.PI * f) * 0.55));
       m.group.rotation.y += dt * 6;
+      if (m.hitstun <= 0) m.stunFrom = null;
       continue;
     }
     // aggro latch
@@ -358,12 +391,17 @@ function updateMobs(dt: number) {
         m.telegraphTotal = m.def.telegraph;
       }
     }
-    // bob / squash anim
+    // idle wobble / breathing anim — squash & stretch per creature type
     const t = G.time * 6 + m.phase;
     if (m.def.kind === 'slime' || m.def.kind === 'ranged') {
-      m.group.scale.y = m.def.scale * (1 + Math.sin(t) * 0.09);
+      m.group.scale.x = m.def.scale * (1 - Math.sin(t) * 0.07);
+      m.group.scale.z = m.def.scale * (1 - Math.sin(t) * 0.07);
+      m.group.scale.y = m.def.scale * (1 + Math.sin(t) * 0.12);
     } else {
-      m.group.position.y = Math.abs(Math.sin(t)) * 0.06;
+      // walkers: body bob + weight shift
+      m.group.position.y = Math.abs(Math.sin(t)) * 0.07;
+      m.group.rotation.z = Math.sin(t * 0.5) * 0.04;
+      m.group.scale.setScalar(m.def.scale);
     }
     // arena clamp
     m.group.position.x = THREE.MathUtils.clamp(m.group.position.x, -size + 1, size - 1);
@@ -508,6 +546,51 @@ function updateDrops(dt: number) {
 // ============================== combat: player ==============================
 const facing = () => new THREE.Vector3(Math.sin(G.yaw), 0, Math.cos(G.yaw));
 
+// angle-damped turn toward a target yaw (no wrap-around spin)
+const dampAngle = (cur: number, target: number, rate: number) => {
+  let dy = target - cur;
+  while (dy > Math.PI) dy -= Math.PI * 2;
+  while (dy < -Math.PI) dy += Math.PI * 2;
+  return cur + dy * Math.min(1, rate);
+};
+
+// nearest lock candidate: mobs + active boss, prefers the camera-forward cone
+function pickLockTarget(): Mob | Boss | null {
+  const camFwd = new THREE.Vector3(Math.sin(G.camYaw), 0, Math.cos(G.camYaw));
+  const cands: (Mob | Boss)[] = [];
+  for (const m of G.mobs) if (!m.dead) cands.push(m);
+  if (G.boss && G.bossActive && G.bossIntro <= 0) cands.push(G.boss);
+  let best: (Mob | Boss) | null = null;
+  let bestScore = -Infinity;
+  for (const t of cands) {
+    const to = t.group.position.clone().sub(G.pos);
+    const d = to.length();
+    if (d > 16) continue;
+    const ang = Math.acos(THREE.MathUtils.clamp(to.normalize().dot(camFwd), -1, 1));
+    const score = (ang < 1.3 ? 1000 : 0) - d;
+    if (score > bestScore) { bestScore = score; best = t; }
+  }
+  return best;
+}
+
+// aim assist (no F lock): nearest target that the current swing would plausibly hit
+function aimAssistTarget(range: number): Mob | Boss | null {
+  const dir = facing();
+  const cands: (Mob | Boss)[] = [];
+  for (const m of G.mobs) if (!m.dead) cands.push(m);
+  if (G.boss && G.bossActive && G.bossIntro <= 0) cands.push(G.boss);
+  let best: (Mob | Boss) | null = null;
+  let bestD = Infinity;
+  for (const t of cands) {
+    const to = t.group.position.clone().sub(G.pos);
+    const d = to.length();
+    if (d > range * 1.6) continue;
+    const ang = Math.acos(THREE.MathUtils.clamp(to.normalize().dot(dir), -1, 1));
+    if (ang < 1.4 && d < bestD) { bestD = d; best = t; }
+  }
+  return best;
+}
+
 function startAttack() {
   if (G.atk || G.mode !== 'play' || G.hitstun > 0 || G.dodging > 0) return;
   const w = WEAPONS[G.weaponIdx];
@@ -516,6 +599,20 @@ function startAttack() {
   const sinceLast = G.time - G.lastHitT;
   const combo = sinceLast < 0.9 ? Math.min(3, G.lastCombo + 1) : 1;
   G.atk = { combo, t: 0, dur: 0.5 / w.speed, hitDone: false };
+  // aim: locked target > aim-assist nearest target in the swing window > camera forward
+  const lk = G.locked;
+  if (lk) {
+    const to = lk.group.position.clone().sub(G.pos); to.y = 0;
+    if (to.lengthSq() > 0.01) G.yaw = Math.atan2(to.x, to.z);
+  } else {
+    const assist = aimAssistTarget(w.range);
+    if (assist) {
+      const to = assist.group.position.clone().sub(G.pos); to.y = 0;
+      if (to.lengthSq() > 0.01) G.yaw = Math.atan2(to.x, to.z);
+    } else if (document.pointerLockElement === canvas) {
+      G.yaw = Math.atan2(Math.sin(G.camYaw), Math.cos(G.camYaw));
+    }
+  }
   SFX.swing(combo === 3);
 }
 
@@ -648,29 +745,41 @@ function updatePlayer(dt: number) {
   G.dodgeCd = Math.max(0, G.dodgeCd - dt);
   G.iframes = Math.max(0, G.iframes - dt);
   G.hurtFlash = Math.max(0, G.hurtFlash - dt);
+  G.blockChipT = Math.max(0, G.blockChipT - dt);
   const w = WEAPONS[G.weaponIdx];
 
+  // lock-on (F): validate the sticky lock; F is the only way to (re)acquire
+  if (G.locked) {
+    const l = G.locked;
+    if (l.hp <= 0 || l.group.position.distanceTo(G.pos) > 26) G.locked = null;
+  }
+  if (G.locked) {
+    // aim (and walk) toward the locked target; attacks stay locked
+    const to = G.locked.group.position.clone().sub(G.pos);
+    if (to.lengthSq() > 0.01) G.yaw = Math.atan2(to.x, to.z);
+  }
+
+  let moving = false;
+  const mv = new THREE.Vector3();
   if (G.hitstun > 0) {
     G.hitstun -= dt;
   } else if (G.dodging > 0) {
     G.dodging -= dt;
     G.pos.addScaledVector(G.dodgeDir, 9 * dt);
   } else {
-    // movement
-    const fwd = facing();
-    const right = new THREE.Vector3(Math.cos(G.yaw), 0, -Math.sin(G.yaw));
-    const mv = new THREE.Vector3();
-    if (keys['w']) mv.add(fwd);
-    if (keys['s']) mv.sub(fwd);
-    if (keys['d']) mv.add(right);
-    if (keys['a']) mv.sub(right);
-    const moving = mv.lengthSq() > 0;
+    // movement — DARK SOULS STYLE: WASD is camera-relative, character turns to travel
+    const cf = new THREE.Vector3(Math.sin(G.camYaw), 0, Math.cos(G.camYaw));
+    const cr = new THREE.Vector3(Math.cos(G.camYaw), 0, -Math.sin(G.camYaw));
+    if (keys['w']) mv.add(cf);
+    if (keys['s']) mv.sub(cf);
+    if (keys['d']) mv.add(cr);
+    if (keys['a']) mv.sub(cr);
+    moving = mv.lengthSq() > 0;
     if (moving) {
       mv.normalize();
       const speed = G.blockHeld ? 2.6 : 5.4;
       G.pos.addScaledVector(mv, speed * dt);
-      const targetYaw = Math.atan2(mv.x, mv.z);
-      G.yaw = targetYaw;
+      if (!G.locked) G.yaw = dampAngle(G.yaw, Math.atan2(mv.x, mv.z), 1 - Math.exp(-14 * dt));
     }
     // block
     if (G.blockHeld && G.time - G.blockStart > 0.02) {
@@ -683,7 +792,7 @@ function updatePlayer(dt: number) {
         G.iframes = DODGE_IFRAMES;
         G.dodgeCd = DODGE_CD;
         G.stamina -= 20;
-        G.dodgeDir = moving ? mv.clone() : fwd.clone();
+        G.dodgeDir = moving ? mv.clone() : facing().clone();
         SFX.dodge();
       }
     }
@@ -691,6 +800,7 @@ function updatePlayer(dt: number) {
     if (mouseDown) startAttack();
   }
   spaceQueued = false;
+  G.moveAmt = moving ? 1 : 0;
   // stamina regen
   if (!G.blockHeld && !G.atk) G.stamina = Math.min(stMax(), G.stamina + 26 * dt);
   // arena clamp
@@ -710,27 +820,78 @@ function updatePlayer(dt: number) {
       }
     }
   }
-  // attack progression
+  // attack progression (swing visuals live in updateAnim)
   if (G.atk) {
     G.atk.t += dt;
-    const f = G.atk.t / G.atk.dur;
-    if (f < 0.45) weaponPivot.rotation.y = THREE.MathUtils.lerp(0, -2.3, f / 0.45);
-    else if (!G.atk.hitDone) {
+    if (!G.atk.hitDone && G.atk.t / G.atk.dur >= 0.45) {
       G.atk.hitDone = true;
-      weaponPivot.rotation.y = 0.9;
       doPlayerHit();
-    } else {
-      weaponPivot.rotation.y = THREE.MathUtils.lerp(0.9, 0, (f - 0.45) / 0.55);
     }
-    if (G.atk.t >= G.atk.dur) { G.atk = null; weaponPivot.rotation.y = 0; }
+    if (G.atk.t >= G.atk.dur) G.atk = null;
   }
   // apply transform
   player.position.copy(G.pos);
   player.rotation.y = G.yaw;
   // hurt tint
-  const bodyMat = (player.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
   bodyMat.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
   bodyMat.emissiveIntensity = G.hurtFlash * 2;
+}
+
+// ============================== player animation ==============================
+function updateAnim(dt: number) {
+  const playing = G.mode === 'play';
+  const ph = G.animPhase;
+  const swingAmp = 0.85 * (playing ? G.moveAmt : 0.2);
+  // walk cycle (limbs exist on the player only — mobs are blobs)
+  legL.rotation.x = Math.sin(ph) * swingAmp;
+  legR.rotation.x = Math.sin(ph + Math.PI) * swingAmp;
+  armL.rotation.x = Math.sin(ph + Math.PI) * swingAmp * 0.6;
+  // weapon arm: walk swing when idle, attack pose overrides.
+  // Pose axes: pivot.x = chop (weapon head back-over-front), pivot.z = lateral, armR.x = arm drive.
+  if (G.atk) {
+    const f = THREE.MathUtils.clamp(G.atk.t / G.atk.dur, 0, 1);
+    const c = G.atk.combo;
+    const back = 1.0 + c * 0.15; // cock height (over the shoulder)
+    const fwd = 1.15 + c * 0.12; // slash drive (down across the body)
+    let armX: number, pX: number, pZ: number;
+    if (f < 0.3) { // anticipation: wind up over the right shoulder
+      const u = f / 0.3; const e = u * u;
+      armX = THREE.MathUtils.lerp(0, 0.75, e);
+      pX = THREE.MathUtils.lerp(0.1, -back, e);
+      pZ = THREE.MathUtils.lerp(-0.2, -0.5, e);
+    } else if (f < 0.5) { // the chop: overhead down to the front
+      const u = (f - 0.3) / 0.2; const e = u * (2 - u);
+      armX = THREE.MathUtils.lerp(0.75, -0.95, e);
+      pX = THREE.MathUtils.lerp(-back, fwd, e);
+      pZ = THREE.MathUtils.lerp(-0.5, 0.4, e);
+    } else { // recovery: ease back to the guard
+      const u = (f - 0.5) / 0.5; const e = 1 - (1 - u) * (1 - u);
+      armX = THREE.MathUtils.lerp(-0.95, 0, e);
+      pX = THREE.MathUtils.lerp(fwd, 0.1, e);
+      pZ = THREE.MathUtils.lerp(0.4, -0.2, e);
+    }
+    armR.rotation.x = armX;
+    weaponPivot.rotation.x = pX;
+    weaponPivot.rotation.z = pZ;
+    bodyRoot.rotation.x = -Math.sin(Math.PI * Math.min(1, f * 1.6)) * 0.18; // lean into the strike
+  } else {
+    armR.rotation.x = Math.sin(ph) * swingAmp * 0.4;
+    weaponPivot.rotation.x = G.blockHeld ? 1.3 : 0.1;
+    weaponPivot.rotation.z = G.blockHeld ? -0.4 : -0.25; // guard / rest tilt
+    bodyRoot.rotation.x = 0;
+  }
+  // dodge roll: tuck + spin
+  if (G.dodging > 0) {
+    const f = 1 - G.dodging / 0.32;
+    bodyRoot.rotation.x = -Math.sin(Math.PI * f) * 1.1;
+    bodyRoot.position.y = Math.sin(Math.PI * f) * 0.22;
+  } else {
+    bodyRoot.rotation.x = THREE.MathUtils.lerp(bodyRoot.rotation.x, 0, 1 - Math.exp(-12 * dt));
+    bodyRoot.position.y = THREE.MathUtils.lerp(bodyRoot.position.y, 0, 1 - Math.exp(-12 * dt));
+  }
+  // idle bob + breathing + step bob
+  bodyRoot.position.y += Math.sin(G.time * 2.2) * 0.012;
+  bodyRoot.position.y += Math.abs(Math.sin(ph)) * 0.05 * G.moveAmt;
 }
 
 // ============================== boss ==============================
@@ -744,7 +905,8 @@ function startBoss() {
   scene.add(group);
   const newBoss: Boss = {
     def, group, mat, hp: def.hp, state: 'idle',
-    cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55, charge: null, targetPos: null, phase: Math.random() * 6.28,
+    cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55,
+    charge: null, lunge: null, targetPos: null, baseY: zb.boss.y, phase: Math.random() * 6.28,
   };
   for (const a of Object.keys(def.attacks)) newBoss.cds[a] = 1;
   G.boss = newBoss;
@@ -852,9 +1014,16 @@ function updateBoss(dt: number) {
     b.group.position.addScaledVector(b.charge.dir, 9 * dt);
     b.group.position.x = THREE.MathUtils.clamp(b.group.position.x, -size + 1.5, size - 1.5);
     b.group.position.z = THREE.MathUtils.clamp(b.group.position.z, -size + 1.5, size - 1.5);
-    if (dist < 1.9 + b.def.scale * 0.4) damagePlayer(b.def.attacks[b.current].damage, true);
+    if (dist < 1.9 + b.def.scale * 0.4) damagePlayer(b.charge.dmg, true);
     if (b.charge.t <= 0) b.charge = null;
     return;
+  }
+  if (b.lunge) {
+    b.lunge.t -= dt;
+    b.group.position.addScaledVector(b.lunge.dir, 16 * dt);
+    b.group.position.x = THREE.MathUtils.clamp(b.group.position.x, -size + 1.5, size - 1.5);
+    b.group.position.z = THREE.MathUtils.clamp(b.group.position.z, -size + 1.5, size - 1.5);
+    if (b.lunge.t <= 0) b.lunge = null;
   }
   if (b.state === 'windup') {
     b.telegraph -= dt;
@@ -862,9 +1031,15 @@ function updateBoss(dt: number) {
     const f = atk.telegraph > 0 ? 1 - b.telegraph / atk.telegraph : 1;
     b.mat.emissive.setHex(0xff5544);
     b.mat.emissiveIntensity = 0.15 + f * 0.7;
+    // anticipation: crouch + lean before the strike lands
+    const melee = b.current === 'SeatSwing' || b.current === 'Lurch' || b.current === 'SmearSlap';
+    b.group.position.y = b.baseY - (melee ? f * 0.15 : f * 0.4);
+    b.group.rotation.x = melee ? f * 0.12 : -f * 0.18;
     if (b.telegraph <= 0) {
       b.mat.emissive.setHex(b.def.color);
       b.mat.emissiveIntensity = 0.08;
+      b.group.position.y = b.baseY;
+      b.group.rotation.x = 0;
       executeBossAttack(b, atk.damage, atk.range);
       b.cds[b.current] = atk.cd * phase.cdMult;
       b.state = 'idle';
@@ -875,8 +1050,15 @@ function updateBoss(dt: number) {
   }
   // idle: walk toward player + pick attacks
   const walkSpd = 2.8;
-  if (dist > 2.2) {
+  const walking = dist > 2.2 && !b.lunge;
+  if (walking) {
     b.group.position.add(new THREE.Vector3(dx / (dist || 1), 0, dz / (dist || 1)).multiplyScalar(walkSpd * dt));
+    // heavy-footed walk: bob + side-to-side sway
+    b.group.position.y = b.baseY + Math.abs(Math.sin(G.time * 7 + b.phase)) * 0.16;
+    b.group.rotation.z = Math.sin(G.time * 3.5 + b.phase) * 0.05;
+  } else {
+    b.group.position.y = THREE.MathUtils.lerp(b.group.position.y, b.baseY, 1 - Math.exp(-8 * dt));
+    b.group.rotation.z = THREE.MathUtils.lerp(b.group.rotation.z, 0, 1 - Math.exp(-8 * dt));
   }
   for (const a of Object.keys(b.cds)) b.cds[a] -= dt;
   b.idle -= dt;
@@ -900,6 +1082,9 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
   const p = b.group.position;
   if (atk === 'SeatSwing' || atk === 'Lurch' || atk === 'SmearSlap') {
     if (dist < range) damagePlayer(dmg, true);
+    // follow-through lunge — the swing commits forward, reads as a real attack
+    const dir = new THREE.Vector3(G.pos.x - p.x, 0, G.pos.z - p.z).normalize();
+    b.lunge = { dir, t: 0.18 };
     burst(p.clone().setY(1.4), b.def.color, 10, 4, 0.4, 0.1);
   } else if (atk === 'SeatSlam' || atk === 'BodySlam' || atk === 'CorePulse') {
     if (dist < range) damagePlayer(dmg, true);
@@ -918,7 +1103,7 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
     spawnCloud(p, 3, 4, dmg);
   } else if (atk === 'BloatCharge') {
     const dir = new THREE.Vector3(G.pos.x - p.x, 0, G.pos.z - p.z).normalize();
-    b.charge = { dir, t: 1.1 };
+    b.charge = { dir, t: 1.1, dmg };
   } else if (atk === 'WallOfFilth') {
     const rot = Math.atan2(b.group.position.x - G.pos.x, b.group.position.z - G.pos.z);
     const wallPos = G.pos.clone().add(new THREE.Vector3(0, 0, 0));
@@ -1083,6 +1268,9 @@ window.addEventListener('keydown', (e) => {
   if (k === 'q') {
     if (G.mode === 'play') switchWeapon((G.weaponIdx + 1) % WEAPONS.length);
   }
+  if (k === 'f') {
+    if (G.mode === 'play') G.locked = G.locked ? null : pickLockTarget();
+  }
   if (['1', '2', '3', '4'].includes(k)) {
     if (G.mode === 'play') switchWeapon(parseInt(k, 10) - 1);
   }
@@ -1091,7 +1279,10 @@ window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 window.addEventListener('mousedown', (e) => {
   if (e.button === 0) {
     mouseDown = true;
-    if (G.mode === 'play' && document.pointerLockElement !== canvas) canvas.requestPointerLock();
+    if (G.mode === 'play' && document.pointerLockElement !== canvas) {
+      const r = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      if (r && typeof r.catch === 'function') r.catch(() => { /* not-adopted etc. */ });
+    }
   }
   if (e.button === 2) {
     if (G.mode === 'play') {
@@ -1185,6 +1376,10 @@ function syncUI(dt: number) {
 }
 
 // ============================== camera ==============================
+const reticle = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+reticle.scale.setScalar(0.16);
+reticle.visible = false;
+scene.add(reticle);
 function updateCamera(dt: number) {
   if (G.mode === 'title') G.camYawT += dt * 0.12;
   const t = 1 - Math.exp(-9 * dt);
@@ -1201,6 +1396,14 @@ function updateCamera(dt: number) {
   target.y = Math.max(0.4, target.y);
   camera.position.copy(target);
   camera.lookAt(G.pos.clone().add(new THREE.Vector3(0, 1.3, 0)));
+  // aim reticle over the locked target (height from the model's actual scale)
+  if (G.locked && G.mode === 'play' && !G.cinematic) {
+    const p = G.locked.group.position;
+    const s = G.locked.group.scale.y;
+    const isBoss = 'title' in G.locked.def;
+    reticle.position.set(p.x, s * (isBoss ? 2.4 : 1.1) + 0.25, p.z);
+    reticle.visible = true;
+  } else reticle.visible = false;
 }
 
 // ============================== debug hooks ==============================
@@ -1213,11 +1416,15 @@ window.__game = {
     weapon: G.weaponIdx, weaponTier: G.save.weaponTiers[G.weaponIdx],
     weaponName: WEAPONS[G.weaponIdx].name,
     kills: G.kills, deaths: G.deaths, level: levelOf(),
-    mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp) })),
+    mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp), x: Math.round(m.group.position.x * 10) / 10, z: Math.round(m.group.position.z * 10) / 10 })),
+    yaw: Math.round(G.yaw * 100) / 100,
+    cam: { x: Math.round(camera.position.x * 10) / 10, z: Math.round(camera.position.z * 10) / 10 },
+    lockPos: G.locked ? { x: Math.round(G.locked.group.position.x * 10) / 10, z: Math.round(G.locked.group.position.z * 10) / 10 } : null,
     boss: G.boss ? { active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp, state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10 } : null,
     orbSouls: G.orb ? G.orb.souls : 0,
     gritDrops: G.gritDrops.length,
     iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
+    locked: G.locked ? G.locked.def.id : null,
     stats: { ...G.save.stats },
     pos: { x: Math.round(G.pos.x * 10) / 10, z: Math.round(G.pos.z * 10) / 10 },
   }),
@@ -1244,6 +1451,26 @@ window.__game = {
       G.pos.set(p.x, 0, p.z + 5);
       G.yaw = Math.atan2(-G.pos.x + p.x, -G.pos.z + p.z);
       G.hitstun = 0; G.atk = null;
+    }
+  },
+  lock: (v?: boolean) => {
+    if (v === undefined) return G.locked ? G.locked.def.id : null;
+    G.locked = v ? pickLockTarget() : null;
+    return G.locked ? G.locked.def.id : null;
+  },
+  setCam: (yaw: number, pitch?: number) => {
+    G.camYaw = G.camYawT = yaw;
+    if (pitch !== undefined) G.camPitch = G.camPitchT = pitch;
+  },
+  snapLocked: () => {
+    const l = G.locked;
+    if (l) {
+      const p = l.group.position;
+      const dx = G.pos.x - p.x, dz = G.pos.z - p.z;
+      const d = Math.hypot(dx, dz) || 1;
+      G.pos.set(p.x + (dx / d) * 2, 0, p.z + (dz / d) * 2);
+      G.yaw = Math.atan2(-dx / d, -dz / d);
+      G.hitstun = 0; G.atk = null; G.dodging = 0;
     }
   },
   setHp: (n: number) => { G.hp = Math.max(1, Math.min(hpMax(), n)); },
@@ -1277,6 +1504,8 @@ function frame() {
   }
   updateParticles(dt);
   updateDrops(dt);
+  if (G.mode === 'play') G.animPhase += dt * (G.dodging > 0 ? 4 : G.moveAmt > 0 ? 10.5 : 1.5);
+  updateAnim(dt);
   updateCamera(dt);
   syncUI(dt);
   renderer.render(scene, camera);
