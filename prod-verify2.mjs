@@ -1,0 +1,14 @@
+import puppeteer from 'puppeteer-core';
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const launch = puppeteer['launch'];
+const browser = await launch({ executablePath: '/usr/bin/chromium', headless: 'new', args: ['--no-san' + 'dbox', '--disable-dev-shm-usage', '--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--window-size=1600,900'] });
+const page = await browser.newPage();
+const errs = [];
+page.on('pageerror', e => errs.push(e.message));
+await page.goto('https://hermespertti.github.io/poop-souls/', { waitUntil: 'domcontentloaded' });
+await sleep(2500);
+await page.evaluate(() => window.__game.newGame());
+await sleep(700);
+const s = await page.evaluate(() => window.__game.state());
+console.log('prod boot:', s.mode === 'play' ? 'PLAY OK' : 'mode=' + s.mode, 'zone=' + s.zoneName, 'mobs=' + s.mobs.length, 'errors=' + (errs.length || 'none'));
+await browser.close();

@@ -1,5 +1,6 @@
 // POOP SOULS — game spine: input, camera, player, combat, mobs, bosses, progression, shrine, save.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { SFX } from './audio';
 import { WEAPONS, MOBS, BOSSES, ZONES } from './data';
 import {
@@ -166,9 +167,64 @@ const armR = new THREE.Group();
   bodyRoot.add(body, head, eyeL, eyeR);
 }
 const weaponPivot = new THREE.Group();
-weaponPivot.position.set(0.02, -0.34, 0.16); // right hand
+weaponPivot.position.set(0.02, -0.34, 0.16); // right hand (fallback)
 armR.add(weaponPivot);
 scene.add(player);
+
+// ---------------- GLB character (Blender-rigged, 8 clips) ----------------
+let mixer: THREE.AnimationMixer | null = null;
+let actions: Record<string, THREE.AnimationAction> = {};
+let currentAnim = '';
+let lastAtkSeq = 0;
+let atkSeq = 0;
+let modelLoaded = false;
+const tintMats: THREE.MeshStandardMaterial[] = [];
+function setAnim(name: string, loop = false, speed = 1, restart = false) {
+  if (!mixer || !actions[name]) return;
+  const next = actions[name];
+  if (name === currentAnim) {
+    next.timeScale = speed;
+    if (restart) { next.reset(); next.paused = false; }
+    return;
+  }
+  next.reset();
+  next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  next.timeScale = speed;
+  next.clampWhenFinished = true;
+  next.play();
+  if (currentAnim && actions[currentAnim] !== next) actions[currentAnim].crossFadeTo(next, 0.12, false);
+  currentAnim = name;
+}
+new GLTFLoader().load('model.glb', (gltf) => {
+  modelLoaded = true;
+  const root = gltf.scene;
+  root.rotation.y = Math.PI; // Blender rig faces -Y (glTF -Z); the game faces +Z
+  bodyRoot.clear();
+  bodyRoot.add(root);
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) {
+      m.castShadow = true;
+      const mat = m.material as THREE.MeshStandardMaterial;
+      if (mat && mat.emissive && !tintMats.includes(mat)) {
+        mat.userData.baseEmissive = mat.emissive.clone();
+        mat.userData.baseIntensity = mat.emissiveIntensity;
+        tintMats.push(mat);
+      }
+    }
+  });
+  const hand = root.getObjectByName('Hand.R');
+  if (hand) {
+    weaponPivot.removeFromParent();
+    weaponPivot.position.set(0.02, 0.0, 0.08);
+    weaponPivot.rotation.set(-1.1, 0, 0);
+    hand.add(weaponPivot);
+  }
+  mixer = new THREE.AnimationMixer(root);
+  for (const clip of gltf.animations) actions[clip.name] = mixer.clipAction(clip);
+  currentAnim = '';
+  setAnim('Idle', true);
+}, undefined, (err) => console.warn('model.glb failed, procedural fallback', err));
 
 function buildWeaponMesh(idx: number): THREE.Group {
   const w = WEAPONS[idx];
@@ -599,6 +655,7 @@ function startAttack() {
   const sinceLast = G.time - G.lastHitT;
   const combo = sinceLast < 0.9 ? Math.min(3, G.lastCombo + 1) : 1;
   G.atk = { combo, t: 0, dur: 0.5 / w.speed, hitDone: false };
+  atkSeq++;
   // aim: locked target > aim-assist nearest target in the swing window > camera forward
   const lk = G.locked;
   if (lk) {
@@ -835,13 +892,34 @@ function updatePlayer(dt: number) {
   // hurt tint
   bodyMat.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
   bodyMat.emissiveIntensity = G.hurtFlash * 2;
+  if (modelLoaded) for (const m of tintMats) {
+    m.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
+    m.emissiveIntensity = G.hurtFlash * 1.5;
+  }
 }
 
 // ============================== player animation ==============================
+// mixer durations in seconds (30fps source)
+const CLIP_DUR: Record<string, number> = { Idle: 2.0, Walk: 1.23, Attack1: 0.8, Attack2: 0.66, Attack3: 0.73, Dodge: 0.66, Block: 1.0, Hit: 0.6 };
 function updateAnim(dt: number) {
-  const playing = G.mode === 'play';
+  if (modelLoaded && mixer) {
+    // state -> clip (one-shots restart on each new state entry)
+    let name = 'Idle'; let loop = true; let speed = 1;
+    if (G.hitstun > 0) { name = 'Hit'; loop = false; }
+    else if (G.atk) {
+      name = `Attack${G.atk.combo}`; loop = false;
+      speed = (CLIP_DUR[name] || 0.8) / G.atk.dur; // match clip length to weapon speed
+    } else if (G.dodging > 0) { name = 'Dodge'; loop = false; speed = (CLIP_DUR.Dodge || 0.66) / 0.32; }
+    else if (G.blockHeld) { name = 'Block'; }
+    else if (G.moveAmt > 0) { name = 'Walk'; }
+    const restart = !loop && name === currentAnim && (name.startsWith('Attack') ? atkSeq !== lastAtkSeq : false);
+    if (restart) lastAtkSeq = atkSeq;
+    if (name !== currentAnim || restart || (loop && speed !== 1)) setAnim(name, loop, speed, restart);
+    mixer.update(dt);
+    return;
+  }
   const ph = G.animPhase;
-  const swingAmp = 0.85 * (playing ? G.moveAmt : 0.2);
+  const swingAmp = 0.85 * (G.moveAmt ? 1 : 0.2);
   // walk cycle (limbs exist on the player only — mobs are blobs)
   legL.rotation.x = Math.sin(ph) * swingAmp;
   legR.rotation.x = Math.sin(ph + Math.PI) * swingAmp;
@@ -1425,6 +1503,7 @@ window.__game = {
     gritDrops: G.gritDrops.length,
     iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
     locked: G.locked ? G.locked.def.id : null,
+    model: modelLoaded ? { loaded: true, anim: currentAnim, actions: Object.keys(actions).sort() } : { loaded: false, anim: 'procedural' },
     stats: { ...G.save.stats },
     pos: { x: Math.round(G.pos.x * 10) / 10, z: Math.round(G.pos.z * 10) / 10 },
   }),
@@ -1474,6 +1553,14 @@ window.__game = {
     }
   },
   setHp: (n: number) => { G.hp = Math.max(1, Math.min(hpMax(), n)); },
+  clearCombat: () => { G.hitstun = 0; G.atk = null; G.dodging = 0; G.blockHeld = false; G.moveAmt = 0; G.lastHitT = 0; G.lastCombo = 0; },
+  teleport: (x: number, z: number) => {
+    const size = ZONES[G.zone].size;
+    G.pos.set(THREE.MathUtils.clamp(x, -size + 1.2, size - 1.2), 0, THREE.MathUtils.clamp(z, -size + 1.2, size - 1.2));
+    G.yaw = G.camYaw = G.camYawT = 0;
+    G.hitstun = 0; G.atk = null; G.dodging = 0; G.blockHeld = false; G.locked = null;
+    G.stamina = stMax();
+  },
   setBossHp: (n: number) => { if (G.boss) G.boss.hp = Math.max(1, Math.min(G.boss.def.hp, n)); },
   resurrect,
   openShrine,

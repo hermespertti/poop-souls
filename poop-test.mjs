@@ -118,6 +118,40 @@ if (ls.lockPos) {
 } else ok('lockPos reported', false);
 ok('F releases the lock', (await page.evaluate(() => window.__game.lock(false))) === null);
 
+console.log('== GLB character (Blender rig) ==');
+await sleep(1500); // let the GLB finish loading
+// reset to a clear corner: no aggro, no hitstun, deterministic facing
+await page.evaluate(() => { window.__game.setHp(999); window.__game.teleport(-20, -20); });
+await sleepFrames(page, 15);
+st = await S(page);
+ok('model.glb loaded', st.model && st.model.loaded === true);
+ok('all 8 clips present', st.model && st.model.actions.length === 8 &&
+  ['Attack1','Attack2','Attack3','Block','Dodge','Hit','Idle','Walk'].every((a) => st.model.actions.includes(a)));
+ok('idle clip playing at rest', st.model && st.model.anim === 'Idle');
+// walk a few frames -> Walk clip
+await page.keyboard.down('KeyW');
+await sleepFrames(page, 20);
+st = await S(page);
+ok('walk clip while moving', st.model && st.model.anim === 'Walk');
+await page.keyboard.up('KeyW');
+await sleepFrames(page, 15);
+st = await S(page);
+ok('back to Idle after stopping', st.model && st.model.anim === 'Idle');
+// dodge -> Dodge clip
+await page.evaluate(() => window.__game.dodge());
+await sleepFrames(page, 6);
+st = await S(page);
+ok('dodge clip on dodge', st.model && st.model.anim === 'Dodge');
+await sleepFrames(page, 30);
+// attack -> Attack1 clip (starter weapon, combo 1)
+await page.evaluate(() => { window.__game.clearCombat(); window.__game.attack(); });
+await sleepFrames(page, 6);
+st = await S(page);
+ok('attack1 clip on attack', st.model && st.model.anim === 'Attack1');
+await sleepFrames(page, 30);
+st = await S(page);
+ok('returns to Idle after attack', st.model && st.model.anim === 'Idle');
+
 console.log('== weapon switching ==');
 await page.evaluate(() => window.__game.weapon(1));
 await sleepFrames(page);
