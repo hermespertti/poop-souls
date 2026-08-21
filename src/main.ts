@@ -216,12 +216,22 @@ new GLTFLoader().load('model.glb', (gltf) => {
       }
     }
   });
+  // The rig's hand-bone local frames are Blender-convention (local -Y ≈ world up),
+  // so parent-held items must be re-aimed into the player's world frame:
+  // pivot world orientation = player world orientation -> local +Y up, +Z forward.
+  player.updateWorldMatrix(true, true);
+  const qHand = new THREE.Quaternion(), qPlayer = new THREE.Quaternion();
+  const aimAtPlayer = (obj: THREE.Object3D, parent: THREE.Object3D) => {
+    parent.getWorldQuaternion(qHand);
+    player.getWorldQuaternion(qPlayer);
+    obj.quaternion.copy(qHand).invert().multiply(qPlayer);
+  };
   const findBone = (names: string[]) => { for (const n of names) { const b = root.getObjectByName(n); if (b) return b; } return null; };
   const hand = findBone(['Hand.R', 'HandR']);
   if (hand) {
     weaponPivot.removeFromParent();
-    weaponPivot.position.set(0, -0.02, 0.05);
-    weaponPivot.rotation.set(-0.45, 0, 0.12);
+    weaponPivot.position.set(0, 0, 0.02);
+    aimAtPlayer(weaponPivot, hand);
     weaponPivot.scale.setScalar(1.5); // readable at third-person distance
     hand.add(weaponPivot);
   }
@@ -229,14 +239,17 @@ new GLTFLoader().load('model.glb', (gltf) => {
   const handL = findBone(['Hand.L', 'HandL']);
   if (handL) {
     const shMat = new THREE.MeshStandardMaterial({ color: 0xd8d4c8, roughness: 0.35, metalness: 0.1 });
+    const shieldRoot = new THREE.Group();
+    shieldRoot.position.set(-0.02, -0.02, 0.04);
+    aimAtPlayer(shieldRoot, handL);
     const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.05, 14), shMat);
-    shield.rotation.z = Math.PI / 2;
-    shield.position.set(0.06, -0.03, 0);
+    shield.rotation.x = Math.PI / 2; // face normal -> +Z (player forward)
+    shield.position.set(0, 0, 0);
     const boss = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.07, 8), shMat);
-    boss.rotation.z = Math.PI / 2;
-    boss.position.set(0.085, -0.03, 0);
-    shield.add(boss);
-    handL.add(shield);
+    boss.rotation.x = Math.PI / 2;
+    boss.position.set(0, 0, 0.055);
+    shieldRoot.add(shield, boss);
+    handL.add(shieldRoot);
     shield.castShadow = true;
     tintMats.push(shMat);
   }
