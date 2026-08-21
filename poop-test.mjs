@@ -92,6 +92,23 @@ let yawErr = Math.abs(m1.yaw - travelYaw) % (Math.PI * 2);
 if (yawErr > Math.PI) yawErr = Math.PI * 2 - yawErr;
 ok('character faces travel direction (smooth turn, no spin)', yawErr < 0.35);
 
+console.log('== D-key screen-relative direction ==');
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(0, 0); window.__game.setCam(0, 0.42); window.__game.clearCombat(); });
+await sleepFrames(page, 10);
+const d0 = await S(page);
+await page.keyboard.down('KeyD');
+await sleepFrames(page, 30);
+await page.keyboard.up('KeyD');
+const d1 = await S(page);
+// camYaw=0: camera sits at -Z looking +Z, so screen-right is -X
+ok('D moves screen-right (not left)', d1.pos.x - d0.pos.x < -0.5 && Math.abs(d1.pos.z - d0.pos.z) < 0.35);
+const a0 = await S(page);
+await page.keyboard.down('KeyA');
+await sleepFrames(page, 30);
+await page.keyboard.up('KeyA');
+const a1 = await S(page);
+ok('A moves screen-left', a1.pos.x - a0.pos.x > 0.5);
+
 console.log('== lock-on (F) ==');
 await page.evaluate(() => window.__game.spawnMob('biber'));
 await sleepFrames(page, 5);
@@ -171,6 +188,27 @@ await sleepFrames(page);
 st = await S(page);
 ok('switch to The Plunger', st.weaponName === 'The Plunger' && st.weapon === 3);
 
+console.log('== flask (Flask of the First Flush) ==');
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(0, 0); window.__game.clearCombat(); });
+await sleepFrames(page, 5);
+st = await S(page);
+ok('flask starts full 1/1', st.flask.charges === 1 && st.flask.max === 1);
+await page.evaluate(() => window.__game.damagePlayer(30));
+await sleepFrames(page, 30); // let hitstun drop so drinking is allowed
+st = await S(page);
+const hpBeforeDrink = st.hp;
+ok('damage applied before drink', hpBeforeDrink < st.maxHp);
+await page.keyboard.press('KeyR');
+await sleepFrames(page, 80); // 0.8s drink + margin
+st = await S(page);
+ok('flask drink healed 35% of max', st.hp - hpBeforeDrink > st.maxHp * 0.3 && st.hp <= st.maxHp);
+ok('flask charge consumed (0/1)', st.flask.charges === 0);
+ok('flask HUD shows 0/1', await page.$eval('#flaskVal', (e) => e.textContent === '0/1'));
+await page.keyboard.press('KeyR');
+await sleepFrames(page, 10);
+st = await S(page);
+ok('empty flask does not drain', st.flask.charges === 0);
+
 console.log('== boss 1 ==');
 await page.evaluate(() => window.__game.startBoss());
 await sleepFrames(page, 5);
@@ -187,6 +225,7 @@ st = await S(page);
 ok('boss defeat advances to zone 1 (Marsh)', st.zoneName === 'The Stinking Marsh' && st.zone === 1);
 ok('boss souls banked (250)', st.souls >= 250);
 ok('boss grit awarded (+1)', st.grit >= 1);
+ok('boss kill grants +1 flask capacity (now 2)', st.flask.max === 2 && st.flask.charges === 2);
 
 console.log('== zone 2 mobs ==');
 st = await S(page);
@@ -195,10 +234,17 @@ ok('marsh has Mire Farts', st.mobs.some((m) => m.id === 'fart'));
 ok('marsh has Gloops', st.mobs.some((m) => m.id === 'gloop'));
 
 console.log('== shrine / progression ==');
+// real player flow: click to lock the pointer in combat, then E at the shrine
+await page.mouse.down();
+await sleepFrames(page, 15);
+ok('pointer locked during combat', await page.evaluate(() => document.pointerLockElement !== null));
 await page.evaluate(() => window.__game.openShrine());
-await sleepFrames(page, 3);
+await sleepFrames(page, 10);
 st = await S(page);
 ok('shrine opens (mode=shrine)', st.mode === 'shrine');
+ok('pointer released in shrine (cursor usable)', await page.evaluate(() => document.pointerLockElement === null));
+ok('shrine shows flask row', await page.$eval('#shFlask', (e) => /^\d+\/\d+$/.test(e.textContent)));
+await page.mouse.up(); // clear the synthetic mousedown
 // spend souls on vigor: need 30 (stat 1 -> 2). give 100 souls
 await page.evaluate(() => window.__game.orb(0)); // no-op guard
 // grant souls via a temp: kill clog is far; instead use debug state through orb pick — simpler: use hitBoss souls? Use direct: orb(n) drops souls at player, then walk? orb pickup is auto within 1.3

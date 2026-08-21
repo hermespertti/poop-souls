@@ -59,11 +59,12 @@
 <div id="hudRight">
   <div>☄ <span id="soulsVal">0</span> souls</div>
   <div>⛏ <span id="gritVal">0</span> grit</div>
+  <div>🏺 <span id="flaskVal">1/1</span> flask</div>
   <div id="weaponName">—</div>
 </div>
 <div id="bossWrap"><div id="bossName"></div><div id="bossBar"><i></i></div><div id="bossSub"></div></div>
 <div id="interact"></div>
-<div id="hint">click to look · WASD move (camera-relative) · F lock on · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · E interact</div>
+<div id="hint">click to look · WASD move (camera-relative) · F lock on · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · R drink flask · E interact</div>
 <div id="toast"></div>
 
 <div class="panel" id="panelTitle">
@@ -85,6 +86,7 @@
     <div class="srow"><span class="name">STRENGTH</span><span class="val" id="sVal"></span><span class="cost" id="sCost"></span><button class="btn small" id="btnS">+1</button></div>
     <div class="srow"><span class="name">COMPOSURE</span><span class="val" id="cVal"></span><span class="cost" id="cCost"></span><button class="btn small" id="btnC">+1</button></div>
     <div class="srow" id="upRow"><span class="name" id="upName"></span><span class="val" id="upTier"></span><span class="cost" id="upCost"></span><button class="btn small" id="btnUp">FORGE</button></div>
+    <div class="srow"><span class="name">FLASK</span><span class="val" id="shFlask">—</span><span class="cost" style="color:var(--dim)">refilled here</span></div>
     <div style="text-align:right;margin-top:14px"><button class="btn small" id="btnCloseShrine">CLOSE (E)</button></div>
     <div class="note" style="margin-top:10px">Souls: <span id="shSouls" style="color:var(--soul)"></span> · Grit: <span id="shGrit" style="color:var(--grit)"></span></div>
   </div>

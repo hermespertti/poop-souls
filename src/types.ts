@@ -98,6 +98,8 @@ export interface SaveData {
   weaponTiers: number[]; // 4 entries, 0..MAX_TIER
   zone: number;          // 0..2
   bossesDefeated: boolean[];
+  flaskCharges: number;  // Flask of the First Flush — charges left
+  flaskMax: number;      // max charges (+1 per boss slain)
 }
 
 export const SAVE_KEY = 'poop-souls-save-v1';
@@ -109,3 +111,6 @@ export const DODGE_CD = 0.5;
 export const BACKSTAB_MULT = 1.6;
 export const HITSTUN = 0.28;           // seconds an enemy locks in after being hit
 export const PLAYER_HITSTUN = 0.25;
+export const FLASK_HEAL_FRAC = 0.35;   // fraction of max HP the flask restores
+export const FLASK_TIME = 0.8;         // seconds to drink
+export const FLASK_MAX_CAP = 5;        // hard cap on flaskMax

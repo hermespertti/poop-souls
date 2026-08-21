@@ -122,6 +122,12 @@ export const SFX = {
     osc("square", 500, 400, 0.05, 0.1, 0.06);
   },
 
+  drink(): void {
+    osc("sine", 260, 160, 0.16, 0.18, 0);
+    osc("sine", 240, 150, 0.16, 0.18, 0.14);
+    noise(0.25, 0.1, 500);
+  },
+
   levelUp(): void {
     osc("triangle", 500, 500, 0.09, 0.2, 0);
     osc("triangle", 700, 700, 0.09, 0.2, 0.09);

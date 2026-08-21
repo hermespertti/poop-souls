@@ -7,6 +7,7 @@ import {
   MobDef, BossDef, SaveData, SAVE_KEY,
   MAX_TIER, STAT_MAX, hpFor, staminaFor, dmgFor, blockFor, statCost, tierBonus, gritForTier,
   PARRY_WINDOW, DODGE_IFRAMES, DODGE_CD, BACKSTAB_MULT, HITSTUN, PLAYER_HITSTUN,
+  FLASK_HEAL_FRAC, FLASK_TIME, FLASK_MAX_CAP,
 } from './types';
 import { buildZone, ZoneBuild } from './world';
 
@@ -38,7 +39,7 @@ interface Orb { obj: THREE.Mesh; pos: THREE.Vector3; souls: number; }
 interface GritDrop { obj: THREE.Mesh; pos: THREE.Vector3; n: number; }
 
 function defaultSave(): SaveData {
-  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false] };
+  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false], flaskCharges: 1, flaskMax: 1 };
 }
 
 const G = {
@@ -70,6 +71,7 @@ const G = {
   time: 0, runT: 0, kills: 0, deaths: 0, soulsEarned: 0,
   camYaw: 0.8, camPitch: 0.42, camYawT: 0.8, camPitchT: 0.42, camDist: 7, camDistT: 7,
   cinematic: false,
+  flaskDrinking: 0, // seconds of drinking left
   locked: null as (Mob | Boss) | null,
   animPhase: 0,
   moveAmt: 0,
@@ -89,6 +91,7 @@ const elStVal = $('stVal');
 const elLvl = $('lvlVal');
 const elSouls = $('soulsVal');
 const elGrit = $('gritVal');
+const elFlask = $('flaskVal');
 const elWeapon = $('weaponName');
 const elZone = $('zoneName');
 const elBossWrap = $('bossWrap');
@@ -198,7 +201,7 @@ function setAnim(name: string, loop = false, speed = 1, restart = false) {
 new GLTFLoader().load('model.glb', (gltf) => {
   modelLoaded = true;
   const root = gltf.scene;
-  root.rotation.y = Math.PI; // Blender rig faces -Y (glTF -Z); the game faces +Z
+  // rig faces +Z in glTF space (visor at +Z) — the game's yaw=0 also faces +Z, no flip needed
   bodyRoot.clear();
   bodyRoot.add(root);
   root.traverse((o) => {
@@ -213,12 +216,29 @@ new GLTFLoader().load('model.glb', (gltf) => {
       }
     }
   });
-  const hand = root.getObjectByName('Hand.R');
+  const findBone = (names: string[]) => { for (const n of names) { const b = root.getObjectByName(n); if (b) return b; } return null; };
+  const hand = findBone(['Hand.R', 'HandR']);
   if (hand) {
     weaponPivot.removeFromParent();
-    weaponPivot.position.set(0.02, 0.0, 0.08);
-    weaponPivot.rotation.set(-1.1, 0, 0);
+    weaponPivot.position.set(0, -0.02, 0.05);
+    weaponPivot.rotation.set(-0.45, 0, 0.12);
+    weaponPivot.scale.setScalar(1.5); // readable at third-person distance
     hand.add(weaponPivot);
+  }
+  // off-hand: porcelain toilet-lid shield (equipment to wear)
+  const handL = findBone(['Hand.L', 'HandL']);
+  if (handL) {
+    const shMat = new THREE.MeshStandardMaterial({ color: 0xd8d4c8, roughness: 0.35, metalness: 0.1 });
+    const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.05, 14), shMat);
+    shield.rotation.z = Math.PI / 2;
+    shield.position.set(0.06, -0.03, 0);
+    const boss = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.07, 8), shMat);
+    boss.rotation.z = Math.PI / 2;
+    boss.position.set(0.085, -0.03, 0);
+    shield.add(boss);
+    handL.add(shield);
+    shield.castShadow = true;
+    tintMats.push(shMat);
   }
   mixer = new THREE.AnimationMixer(root);
   for (const clip of gltf.animations) actions[clip.name] = mixer.clipAction(clip);
@@ -793,6 +813,16 @@ function switchWeapon(i: number) {
   toast(`${w.emoji} ${w.name} +${G.save.weaponTiers[i]}`, 1.2);
 }
 
+// ============================== flask (Flask of the First Flush) ==============================
+function drinkFlask() {
+  if (G.mode !== 'play' || G.hitstun > 0 || G.dodging > 0 || G.flaskDrinking > 0) return;
+  if (G.save.flaskCharges <= 0) { toast('EMPTY. GO REST.', 1.1); SFX.ui(); return; }
+  if (G.hp >= hpMax()) { toast('ALREADY FULL. WASTEFUL.', 1.1); SFX.ui(); return; }
+  G.flaskDrinking = FLASK_TIME;
+  G.blockHeld = false;
+  SFX.drink();
+}
+
 // ============================== player update ==============================
 const keys: Record<string, boolean> = {};
 let spaceQueued = false;
@@ -803,6 +833,17 @@ function updatePlayer(dt: number) {
   G.iframes = Math.max(0, G.iframes - dt);
   G.hurtFlash = Math.max(0, G.hurtFlash - dt);
   G.blockChipT = Math.max(0, G.blockChipT - dt);
+  if (G.flaskDrinking > 0) {
+    G.flaskDrinking -= dt;
+    if (G.flaskDrinking <= 0) {
+      G.flaskDrinking = 0;
+      G.save.flaskCharges = Math.max(0, G.save.flaskCharges - 1);
+      G.hp = Math.min(hpMax(), G.hp + hpMax() * FLASK_HEAL_FRAC);
+      burst(G.pos.clone().setY(1.2), 0x6ab8ff, 10, 2.5, 0.5, 0.06);
+      toast('THE FIRST FLUSH RESTORES YOU', 1.2);
+      save();
+    }
+  }
   const w = WEAPONS[G.weaponIdx];
 
   // lock-on (F): validate the sticky lock; F is the only way to (re)acquire
@@ -826,11 +867,15 @@ function updatePlayer(dt: number) {
   } else {
     // movement — DARK SOULS STYLE: WASD is camera-relative, character turns to travel
     const cf = new THREE.Vector3(Math.sin(G.camYaw), 0, Math.cos(G.camYaw));
-    const cr = new THREE.Vector3(Math.cos(G.camYaw), 0, -Math.sin(G.camYaw));
-    if (keys['w']) mv.add(cf);
-    if (keys['s']) mv.sub(cf);
-    if (keys['d']) mv.add(cr);
-    if (keys['a']) mv.sub(cr);
+    const cr = new THREE.Vector3(-Math.cos(G.camYaw), 0, Math.sin(G.camYaw)); // screen-right
+    if (G.flaskDrinking > 0) {
+      // drinking commits you to the spot
+    } else {
+      if (keys['w']) mv.add(cf);
+      if (keys['s']) mv.sub(cf);
+      if (keys['d']) mv.add(cr);
+      if (keys['a']) mv.sub(cr);
+    }
     moving = mv.lengthSq() > 0;
     if (moving) {
       mv.normalize();
@@ -908,7 +953,8 @@ function updateAnim(dt: number) {
     if (G.hitstun > 0) { name = 'Hit'; loop = false; }
     else if (G.atk) {
       name = `Attack${G.atk.combo}`; loop = false;
-      speed = (CLIP_DUR[name] || 0.8) / G.atk.dur; // match clip length to weapon speed
+      // weapon speed sets the combat window; the clip plays near-natural (capped) so swings are readable
+      speed = Math.min((CLIP_DUR[name] || 0.8) / G.atk.dur, 1.6);
     } else if (G.dodging > 0) { name = 'Dodge'; loop = false; speed = (CLIP_DUR.Dodge || 0.66) / 0.32; }
     else if (G.blockHeld) { name = 'Block'; }
     else if (G.moveAmt > 0) { name = 'Walk'; }
@@ -1052,6 +1098,8 @@ function bossDefeated() {
   G.soulsEarned += b.def.souls;
   G.save.grit += ZONES[G.zone].bossGrit;
   G.save.bossesDefeated[G.zone] = true;
+  G.save.flaskMax = Math.min(FLASK_MAX_CAP, G.save.flaskMax + 1); // +1 flask capacity per boss
+  G.save.flaskCharges = G.save.flaskMax;
   G.kills++;
   G.boss = null;
   G.bossActive = false;
@@ -1211,6 +1259,7 @@ function doInteract() {
   if (hit.kind === 'bonfire') {
     G.hp = hpMax();
     G.stamina = stMax();
+    G.save.flaskCharges = G.save.flaskMax; // bonfire refills the flask
     SFX.bonfire();
     toast('RESTED. FULLY CLEANSED.', 1.4);
     const zb = G.zoneBuild!;
@@ -1227,6 +1276,7 @@ function doInteract() {
 
 function openShrine() {
   G.mode = 'shrine';
+  G.save.flaskCharges = G.save.flaskMax; // shrine refills the flask
   SFX.ui();
   renderShrine();
 }
@@ -1280,6 +1330,7 @@ function renderShrine() {
   };
   $('shSouls').textContent = String(G.save.souls);
   $('shGrit').textContent = String(G.save.grit);
+  $('shFlask').textContent = `${G.save.flaskCharges}/${G.save.flaskMax}`;
 }
 
 // ============================== save / load ==============================
@@ -1295,6 +1346,9 @@ function loadSave(): SaveData | null {
     if (!raw) return null;
     const s = JSON.parse(raw) as SaveData;
     if (typeof s.souls !== 'number' || !s.stats) return null;
+    // migrate pre-flask saves
+    if (typeof s.flaskCharges !== 'number') s.flaskCharges = 1;
+    if (typeof s.flaskMax !== 'number') s.flaskMax = 1;
     return s;
   } catch { return null; }
 }
@@ -1349,6 +1403,9 @@ window.addEventListener('keydown', (e) => {
   if (k === 'f') {
     if (G.mode === 'play') G.locked = G.locked ? null : pickLockTarget();
   }
+  if (k === 'r') {
+    if (G.mode === 'play') drinkFlask();
+  }
   if (['1', '2', '3', '4'].includes(k)) {
     if (G.mode === 'play') switchWeapon(parseInt(k, 10) - 1);
   }
@@ -1393,6 +1450,19 @@ window.addEventListener('wheel', (e) => {
 ($('btnCloseShrine') as HTMLButtonElement).onclick = () => { panelShrine.style.display = 'none'; closeShrine(); };
 ($('btnAgain') as HTMLButtonElement).onclick = () => { panelWin.style.display = 'none'; panelTitle.style.display = 'none'; newGame(); refreshTitle(); };
 
+// pointer-lock ↔ UI mode sync: menus need a real cursor, combat uses pointer lock
+function syncPointerLock() {
+  const el = document.pointerLockElement as HTMLElement | null;
+  if (G.mode !== 'play' && el === canvas) {
+    // release: menu needs the cursor back. (Promise rejects if no user gesture left — harmless.)
+    const r = document.exitPointerLock() as unknown as Promise<void> | undefined;
+    if (r && typeof r.catch === 'function') r.catch(() => { /* no-activation rejection */ });
+  } else if (G.mode === 'play' && el === null && mouseDown) {
+    const r = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (r && typeof r.catch === 'function') r.catch(() => { /* not-adopted / double-request */ });
+  }
+}
+
 // ============================== HUD sync ==============================
 function syncUI(dt: number) {
   if (toastTimer > 0) {
@@ -1423,6 +1493,7 @@ function syncUI(dt: number) {
   elLvl.textContent = String(levelOf());
   elSouls.textContent = String(G.save.souls);
   elGrit.textContent = String(G.save.grit);
+  elFlask.textContent = `${G.save.flaskCharges}/${G.save.flaskMax}`;
   const w = WEAPONS[G.weaponIdx];
   elWeapon.textContent = `${w.emoji} ${w.name} +${G.save.weaponTiers[G.weaponIdx]}`;
   elZone.textContent = ZONES[G.zone].name;
@@ -1500,6 +1571,7 @@ window.__game = {
     lockPos: G.locked ? { x: Math.round(G.locked.group.position.x * 10) / 10, z: Math.round(G.locked.group.position.z * 10) / 10 } : null,
     boss: G.boss ? { active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp, state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10 } : null,
     orbSouls: G.orb ? G.orb.souls : 0,
+    flask: { charges: G.save.flaskCharges, max: G.save.flaskMax, drinking: Math.round(G.flaskDrinking * 100) / 100 },
     gritDrops: G.gritDrops.length,
     iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
     locked: G.locked ? G.locked.def.id : null,
@@ -1546,6 +1618,8 @@ window.__game = {
     G.camYaw = G.camYawT = yaw;
     if (pitch !== undefined) G.camPitch = G.camPitchT = pitch;
   },
+  camDist: (d: number) => { G.camDist = G.camDistT = Math.max(2, Math.min(12, d)); },
+  playerObj: () => player,
   snapLocked: () => {
     const l = G.locked;
     if (l) {
@@ -1599,6 +1673,7 @@ function frame() {
   if (G.mode === 'play') G.animPhase += dt * (G.dodging > 0 ? 4 : G.moveAmt > 0 ? 10.5 : 1.5);
   updateAnim(dt);
   updateCamera(dt);
+  syncPointerLock();
   syncUI(dt);
   renderer.render(scene, camera);
 }
