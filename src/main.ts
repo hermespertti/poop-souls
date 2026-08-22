@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { SFX } from './audio';
+import { MUS } from './music';
 import { WEAPONS, MOBS, BOSSES, ZONES } from './data';
 import {
   MobDef, BossDef, SaveData, SAVE_KEY,
@@ -308,6 +309,7 @@ function clearZoneEntities() {
   G.mobs = [];
   if (G.boss) { scene.remove(G.boss.group); G.boss = null; }
   G.bossActive = false; G.bossIntro = 0;
+  MUS.setBoss(false); // stop the ostinato; loadZone() restarts the ambience
   for (const p of G.projectiles) scene.remove(p.obj);
   G.projectiles = [];
   for (const h of G.hazards) scene.remove(h.obj);
@@ -349,6 +351,7 @@ function loadZone(i: number) {
   G.hp = hpMax(); G.stamina = stMax();
   G.atk = null; G.blockHeld = false; G.dodging = 0; G.hitstun = 0; G.iframes = 0;
   elZone.textContent = ZONES[G.zone].name;
+  MUS.setZone(i); // crossfade ambient drone + character hits to this zone
   save();
 }
 
@@ -842,6 +845,7 @@ function die() {
   G.save.souls = 0;
   burst(G.pos.clone().setY(1), 0x4a6a8a, 24, 4, 0.9, 0.1);
   G.mode = 'over';
+  MUS.duck(true); // quiet the ambience behind the death screen
   const sub = G.orb.souls > 0 ? `${G.orb.souls} souls dropped at the scene of the crime. Die again before you grab them and they're gone.` : 'No souls to lose. At least something.';
   $('overSub').textContent = sub;
   save();
@@ -855,6 +859,7 @@ function resurrect() {
   G.hitstun = 0; G.iframes = 1; G.atk = null; G.dodging = 0;
   G.mode = 'play';
   SFX.bonfire();
+  MUS.duck(false); // back to full ambience after the death screen
   save();
 }
 
@@ -1135,6 +1140,7 @@ function startBoss() {
   G.bossActive = true;
   G.bossIntro = 2.4;
   SFX.bossRoar();
+  MUS.setBoss(true); // layer the boss ostinato over the zone drone
   toast(`${def.name} — ${def.title}`, 2.6);
   if (def.glb) {
     const ms = def.modelScale ?? 1;
@@ -1237,6 +1243,7 @@ function bossDefeated() {
     loadZone(G.zone + 1);
   } else {
     G.mode = 'win';
+    MUS.duck(true); // let the ambience drop under the victory screen
     const m = Math.floor(G.runT / 60), s = Math.floor(G.runT % 60);
     $('winStats').innerHTML = `Level ${levelOf()} · ${G.kills} foes slain · ${G.deaths} deaths<br>${G.soulsEarned} souls earned · ${m}m ${s}s<br>The Throne is clean. You may, at last, sit.`;
     save();
@@ -1509,6 +1516,7 @@ function newGame() {
   G.save = defaultSave();
   G.kills = 0; G.deaths = 0; G.soulsEarned = 0; G.runT = 0;
   SFX.unlock();
+  MUS.unlock();
   loadZone(0);
   G.mode = 'play';
   toast('THE PORCELAIN HOLLOW', 2);
@@ -1518,6 +1526,7 @@ function continueGame() {
   if (!s) return;
   G.save = s;
   SFX.unlock();
+  MUS.unlock();
   loadZone(s.zone);
   G.mode = 'play';
   toast(ZONES[s.zone].name.toUpperCase(), 2);
@@ -1777,6 +1786,8 @@ window.__game = {
     if (pitch !== undefined) G.camPitch = G.camPitchT = pitch;
   },
   camDist: (d: number) => { G.camDist = G.camDistT = Math.max(2, Math.min(12, d)); },
+  music: () => MUS.debug(),
+  musicLevel: (ms?: number) => MUS.level(ms ?? 500),
   playerObj: () => player,
   snapLocked: () => {
     const l = G.locked;
