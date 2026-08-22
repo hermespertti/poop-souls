@@ -122,7 +122,7 @@ function toast(text: string, dur = 1.8) {
 }
 
 // ============================== three setup ==============================
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 const scene = new THREE.Scene();
@@ -1821,8 +1821,6 @@ window.__game = {
   },
   setFog: (near: number, far: number) => { if (scene.fog) { const f = scene.fog as THREE.Fog; f.near = near; f.far = far; } },
   poseBoss: (gap = 6, camD = 5, pitch = 0.25) => {
-    // deterministic capture pose: freeze boss AI, stand `gap` in front, camera behind player.
-    // forces a render first so all matrices are fresh.
     if (!G.boss) return null;
     const aiFrozen = G.boss.state;
     (G.boss as any).state = 'dead'; // suspends AI wander (group + mixer still run)
@@ -1838,6 +1836,38 @@ window.__game = {
     const sc = (window.__game as any).bossScreen();
     G.boss.state = aiFrozen;
     return sc;
+  },
+  jointPix: () => {
+    // project each bone's world position to screen px (for gap measurement)
+    if (!mixer) return null;
+    renderer.render(scene, camera);
+    const out: Record<string, [number, number]> = {};
+    (mixer.getRoot() as THREE.Object3D).traverse((o: THREE.Object3D) => {
+      if ((o as THREE.Bone).isBone) {
+        const v = (o as THREE.Bone).getWorldPosition(new THREE.Vector3()).project(camera);
+        out[o.name] = [Math.round((v.x + 1) / 2 * 1280), Math.round((1 - v.y) / 2 * 720)];
+      }
+    });
+    return out;
+  },
+  px: (x: number, y: number) => {
+    const c = renderer.domElement;
+    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext;
+    const pr = renderer.getPixelRatio();
+    const gx = Math.round(x * pr), gy = Math.round(c.height - y * pr);
+    const buf = new Uint8Array(4);
+    gl.readPixels(gx, gy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return [buf[0], buf[1], buf[2]];
+  },
+  playerShot: (anim = 'Idle', yaw = 0, dist = 2.6, pitch = 0.15) => {
+    // deterministic player close-up: face the camera, play the given clip from t=0.
+    if (actions[anim]) setAnim(anim, true, 1, true);
+    G.yaw = G.camYaw = G.camYawT = yaw;
+    G.camPitch = G.camPitchT = pitch;
+    G.camDist = G.camDistT = dist;
+    G.atk = null; G.dodging = 0; G.hitstun = 0; G.moveAmt = 0;
+    renderer.render(scene, camera);
+    return currentAnim;
   },
 };
 

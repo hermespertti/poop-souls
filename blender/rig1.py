@@ -28,23 +28,47 @@ mDark  = mat("dark",  (0x2a/c, 0x3a/c, 0x4a/c), rough=0.4)
 mVisor = mat("visor", (0.1, 0.9, 0.6), emis=(0.2, 1.0, 0.5))
 
 # parts: (name, center, scale, material, vertgroup)  — character faces -Y
+# Joint z-positions (from the armature): ankle .10, knee .50, hip .92, waist 1.10,
+# neck 1.48, shoulder 1.34, elbow 1.04, wrist .78.
+#
+# PASS 2 (joint-flesh): pass-1 overlap (.04-.10u) still opened up at 45-68 deg
+# relative bends (walk keyframes flex thigh/calf to -50/+45, arms to +-35/+22).
+# Every segment now interpenetrates its neighbors by .10-.19u so even fully
+# flexed joints stay covered. Overlaps:
+#   hip .92  -> pelvis[.86,1.16] x thigh[.43,1.03]  = .17
+#   knee .50 -> thigh[.43,1.03] x calf[.05,.61]     = .18
+#   ankle.10 -> calf[.05,.61]  x foot[.00,.18]      = .13
+#   neck 1.48-> torso[1.055,1.605] x head[1.45,1.81] = .155
+#   shld 1.34-> pad[1.32,1.44] on joint, uarm to 1.43
+#   elbow1.04-> uarm[.91,1.43] x larm[.66,1.10]     = .19
+#   wrist.78 -> larm[.66,1.10] x hand[.58,.76]      = .10
+#
+# PASS 3 (joint caps): axial overlap alone can't seal the INNER corner of a
+# bend (Attack1 flexes the elbow ~120-180 deg -> visible notch). Add rigid
+# "cop" cubes centered ON the joint, weighted to the distal bone: elbow .14,
+# knee .12, wrist .10. Hidden inside the overlap at rest, they fill the inner
+# corner when the joint flexes. Matches the existing shoulder-pad look.
 parts = [
-    ("pelvis", (0, 0, 0.95), (0.16, 0.10, 0.12), mBody, "Hips"),
-    ("torso",  (0, 0, 1.22), (0.17, 0.11, 0.24), mBody, "Spine1"),
-    ("chest",  (0, 0, 1.38), (0.18, 0.10, 0.08), mBody, "Spine1"),
-    ("head",   (0, 0, 1.60), (0.13, 0.14, 0.14), mHead, "Head"),
-    ("visor",  (0, -0.135, 1.61), (0.11, 0.03, 0.025), mVisor, "Head"),
-    ("thighL", (0.10, 0, 0.71), (0.075, 0.075, 0.21), mLeg, "Thigh.L"),
-    ("calfL",  (0.10, 0, 0.31), (0.06, 0.06, 0.20), mLeg, "Calf.L"),
-    ("footL",  (0.10, -0.07, 0.05), (0.06, 0.13, 0.05), mDark, "Foot.L"),
-    ("uarmL",  (0.30, 0, 1.18), (0.055, 0.055, 0.17), mArm, "UpperArm.L"),
-    ("larmL",  (0.32, 0, 0.90), (0.05, 0.05, 0.13), mArm, "LowerArm.L"),
-    ("handL",  (0.32, 0, 0.74), (0.05, 0.055, 0.06), mArm, "Hand.L"),
-    ("padL",   (0.30, 0, 1.36), (0.09, 0.09, 0.06), mDark, "UpperArm.L"),
+    ("pelvis", (0, 0, 1.01), (0.19, 0.13, 0.30), mBody, "Hips"),
+    ("torso",  (0, 0, 1.33), (0.19, 0.13, 0.55), mBody, "Spine1"),
+    ("head",   (0, 0, 1.63), (0.16, 0.17, 0.36), mHead, "Head"),
+    ("visor",  (0, -0.10, 1.65), (0.13, 0.05, 0.04), mVisor, "Head"),
+    ("thighL", (0.10, 0, 0.73), (0.11, 0.11, 0.60), mLeg, "Thigh.L"),
+    ("calfL",  (0.10, 0, 0.33), (0.09, 0.09, 0.56), mLeg, "Calf.L"),
+    ("kneeL",  (0.10, 0, 0.50), (0.12, 0.12, 0.12), mDark, "Calf.L"),
+    ("footL",  (0.10, -0.06, 0.09), (0.10, 0.20, 0.18), mDark, "Foot.L"),
+    ("uarmL",  (0.30, 0, 1.17), (0.08, 0.08, 0.52), mArm, "UpperArm.L"),
+    ("larmL",  (0.32, 0, 0.88), (0.07, 0.07, 0.44), mArm, "LowerArm.L"),
+    ("elbowL", (0.32, 0, 1.04), (0.09, 0.09, 0.09), mDark, "LowerArm.L"),
+    ("handL",  (0.32, 0, 0.67), (0.06, 0.07, 0.18), mArm, "Hand.L"),
+    ("wristL", (0.32, 0, 0.78), (0.07, 0.07, 0.07), mDark, "LowerArm.L"),
+    ("padL",   (0.30, 0, 1.38), (0.12, 0.12, 0.12), mDark, "UpperArm.L"),
 ]
 srcmap = {"thigh": "thighL", "calf": "calfL", "foot": "footL",
-          "uarm": "uarmL", "larm": "larmL", "hand": "handL", "pad": "padL"}
-for n in ("thighR", "calfR", "footR", "uarmR", "larmR", "handR", "padR"):
+          "uarm": "uarmL", "larm": "larmL", "hand": "handL", "pad": "padL",
+          "knee": "kneeL", "elbow": "elbowL", "wrist": "wristL"}
+for n in ("thighR", "calfR", "footR", "uarmR", "larmR", "handR", "padR",
+          "kneeR", "elbowR", "wristR"):
     base = n[:-1]
     p = [q for q in parts if q[0] == srcmap[base]][0]
     parts.append((n, (-p[1][0], p[1][1], p[1][2]), p[2], p[3], p[4].replace(".L", ".R")))
