@@ -1,5 +1,7 @@
-// POOP SOULS — zone/arena builder. Deterministic layout, primitive-only meshes.
+// POOP SOULS — zone/arena builder. Deterministic layout, primitive floor/walls
+// + per-zone Blender prop kits (kit-<zone>.glb) scattered deterministically.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { ZONES } from './data';
 
 export interface Interactable {
@@ -18,10 +20,61 @@ export interface ZoneBuild {
   spawn: THREE.Vector3;
   boss: THREE.Vector3;
   pillars: { x: number; z: number }[];
+  propColliders: { x: number; z: number; r: number }[];
   ambient: {
     fog: number; fogNear: number; fogFar: number; background: number;
     hemiSky: number; hemiGround: number; hemiIntensity: number; light: number;
   };
+}
+
+// Prop types per zone + their collider radius (0 = purely visual).
+const PROP_R: Record<string, number> = {
+  hollow_toilet: 0.6, hollow_pipe: 0.4, hollow_urn: 0.4, hollow_basin: 0.6, hollow_drain: 0,
+  marsh_reeds: 0.3, marsh_stump: 0.5, marsh_barrel: 0.5, marsh_puddle: 0, marsh_rock: 0.6,
+  throne_throne: 1.0, throne_banner: 0.5, throne_filth: 0.6, throne_brazier: 0.4, throne_pedestal: 0.8,
+};
+
+export interface PropSpawn { x: number; z: number; r: number; prop: string; rot: number; scale: number; }
+
+// Deterministic prop placement for a zone (same seed => same layout every load).
+export function propLayout(zoneIndex: number): PropSpawn[] {
+  const zone = ZONES[Math.max(0, Math.min(ZONES.length - 1, zoneIndex))];
+  const size = zone.size;
+  const rand = mulberry32(777 + zoneIndex * 131);
+  const out: PropSpawn[] = [];
+  // keep props off the key functional anchors
+  const anchors: { x: number; z: number; keep: number }[] = [
+    { x: 0, z: -size + 8, keep: 6.5 },      // boss arena / platform
+    { x: -size + 4, z: -size + 4, keep: 6 }, // bonfire
+    { x: -size + 6, z: -size + 6, keep: 7 }, // spawn
+    { x: size - 4, z: -size + 4, keep: 6 },  // shrine
+    { x: 0, z: -size + 2, keep: 5 },        // boss door
+  ];
+  const roster: string[] =
+    zoneIndex === 0 ? ['hollow_toilet','hollow_pipe','hollow_pipe','hollow_urn','hollow_urn','hollow_basin','hollow_basin','hollow_drain','hollow_drain','hollow_drain','hollow_toilet','hollow_pipe']
+    : zoneIndex === 1 ? ['marsh_reeds','marsh_reeds','marsh_reeds','marsh_stump','marsh_stump','marsh_barrel','marsh_barrel','marsh_puddle','marsh_puddle','marsh_puddle','marsh_rock','marsh_rock','marsh_rock','marsh_reeds']
+    : ['throne_banner','throne_banner','throne_banner','throne_brazier','throne_brazier','throne_brazier','throne_filth','throne_filth','throne_filth','throne_pedestal','throne_pedestal','throne_banner'];
+  // centerpiece: the Grand Throne itself — north wall, east of the boss door,
+  // facing the arena (model front is -Z at rot 0, so θ = atan2(tx, tz) points it in)
+  if (zoneIndex === 2) {
+    const tx = size * 0.45, tz = -size + 3.5;
+    out.push({ x: tx, z: tz, r: PROP_R.throne_throne * 1.3, prop: 'throne_throne', rot: Math.atan2(tx, tz), scale: 1.3 });
+    anchors.push({ x: tx, z: tz, keep: 10 });
+  }
+  const minGap = (p: string) => (PROP_R[p] > 0 ? 2.4 : 1.3);
+  for (const prop of roster) {
+    let placed = false, guard = 0;
+    while (!placed && guard < 80) {
+      guard++;
+      const x = (rand() * 2 - 1) * (size - 2.5);
+      const z = (rand() * 2 - 1) * (size - 2.5);
+      if (anchors.some(a => Math.hypot(a.x - x, a.z - z) < a.keep)) continue;
+      if (out.some(q => Math.hypot(q.x - x, q.z - z) < minGap(q.prop) + minGap(prop))) continue;
+      out.push({ x, z, r: PROP_R[prop] ?? 0, prop, rot: rand() * Math.PI * 2, scale: 0.85 + rand() * 0.3 });
+      placed = true;
+    }
+  }
+  return out;
 }
 
 // deterministic PRNG (mulberry32)
@@ -46,6 +99,37 @@ function darkened(hex: number, f: number): number {
   const c = new THREE.Color(hex);
   c.r *= 1 - f; c.g *= 1 - f; c.b *= 1 - f;
   return c.getHex();
+}
+
+// ---------------- prop kit loading (async, cached) ----------------
+const kitGlts: Record<string, THREE.Group> = {};
+export function loadKit(zone: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (kitGlts[zone]) return resolve();
+    new GLTFLoader().load('kit-' + zone + '.glb', (gltf) => {
+      kitGlts[zone] = gltf.scene;
+      resolve();
+    }, undefined, () => resolve()); // missing kit -> zone still works, just fewer props
+  });
+}
+
+// Clone each placed prop from the zone kit and add it to the zone root.
+// Prop objects in the kit are rebased to z=0 and centered at the origin, so
+// setting position/rotation/scale on the clone places it exactly.
+export function spawnProps(root: THREE.Group, zone: string, zoneIndex: number): void {
+  const kit = kitGlts[zone];
+  if (!kit) return;
+  const layout = propLayout(zoneIndex);
+  for (const sp of layout) {
+    const src = kit.getObjectByName(sp.prop);
+    if (!src) continue;
+    const inst = src.clone(true);
+    inst.position.set(sp.x, 0, sp.z);
+    inst.rotation.y = sp.rot;
+    inst.scale.setScalar(sp.scale);
+    inst.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.castShadow = true; });
+    root.add(inst);
+  }
 }
 
 export function buildZone(zoneIndex: number): ZoneBuild {
@@ -256,6 +340,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     { pos: new THREE.Vector3(0, 0, -size + 3.5), radius: 2.0, kind: 'bossDoor', object: doorGroup },
   ];
 
+  const propLayoutArr = propLayout(zoneIndex);
   return {
     root,
     interactables,
@@ -265,6 +350,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     spawn: new THREE.Vector3(-size + 6, 0, -size + 6),
     boss: new THREE.Vector3(0, 0.35, -size + 8),
     pillars,
+    propColliders: propLayoutArr.filter((p) => p.r > 0).map((p) => ({ x: p.x, z: p.z, r: p.r * p.scale })),
     ambient,
   };
 }

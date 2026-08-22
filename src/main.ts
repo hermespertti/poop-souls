@@ -10,7 +10,7 @@ import {
   PARRY_WINDOW, DODGE_IFRAMES, DODGE_CD, BACKSTAB_MULT, HITSTUN, PLAYER_HITSTUN,
   FLASK_HEAL_FRAC, FLASK_TIME, FLASK_MAX_CAP,
 } from './types';
-import { buildZone, ZoneBuild } from './world';
+import { buildZone, ZoneBuild, spawnProps, loadKit } from './world';
 
 declare global {
   interface Window { __game: Record<string, unknown> }
@@ -328,6 +328,10 @@ function loadZone(i: number) {
   const zb = buildZone(i);
   G.zoneBuild = zb;
   scene.add(zb.root);
+  // per-zone prop kit (Blender): spawn clones once the GLB is cached
+  loadKit(ZONES[i].id).then(() => {
+    if (G.zoneBuild === zb) spawnProps(zb.root, ZONES[i].id, i);
+  });
   const a = zb.ambient;
   scene.fog = new THREE.Fog(a.fog, a.fogNear, a.fogFar);
   (scene.background as THREE.Color).setHex(a.background);
@@ -975,6 +979,16 @@ function updatePlayer(dt: number) {
       const dx = G.pos.x - p.x, dz = G.pos.z - p.z;
       const d = Math.hypot(dx, dz);
       const min = 0.7 + 0.45;
+      if (d < min && d > 0.001) {
+        G.pos.x = p.x + (dx / d) * min;
+        G.pos.z = p.z + (dz / d) * min;
+      }
+    }
+    // set-dressing prop collision (toilet, pipes, stumps, barrels, filth, ...)
+    for (const p of zb.propColliders) {
+      const dx = G.pos.x - p.x, dz = G.pos.z - p.z;
+      const d = Math.hypot(dx, dz);
+      const min = p.r + 0.4;
       if (d < min && d > 0.001) {
         G.pos.x = p.x + (dx / d) * min;
         G.pos.z = p.z + (dz / d) * min;
@@ -1786,6 +1800,7 @@ window.__game = {
     if (pitch !== undefined) G.camPitch = G.camPitchT = pitch;
   },
   camDist: (d: number) => { G.camDist = G.camDistT = Math.max(2, Math.min(12, d)); },
+  propColliders: () => (G.zoneBuild ? G.zoneBuild.propColliders : []),
   music: () => MUS.debug(),
   musicLevel: (ms?: number) => MUS.level(ms ?? 500),
   playerObj: () => player,
