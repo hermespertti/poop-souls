@@ -1038,15 +1038,34 @@ function updateAnim(dt: number) {
 }
 
 // ============================== boss ==============================
-// Blender GLB bosses — parsed once per boss id, scene cloned per instance
-const bossGlts: Record<string, { scene: THREE.Group; animations: THREE.AnimationClip[] }> = {};
-function loadBossGltf(id: string, file: string): Promise<void> {
+// Blender GLB characters — parsed once per id, re-bonded clone per instance.
+// SkinnedMesh.copy shares the SOURCE skeleton object, and the cached original
+// scene is never added to the scene graph — its bones' matrixWorld never
+// updates, so a raw clone would be skinned by stale (identity) transforms and
+// render as a crumpled, near-invisible lump. rebindClone() re-points each
+// skinned mesh's skeleton at the clone's own (in-graph) bones.
+const charGlts: Record<string, { scene: THREE.Group; animations: THREE.AnimationClip[] }> = {};
+function loadCharacterGltf(id: string, file: string): Promise<void> {
   return new Promise((resolve) => {
-    if (bossGlts[id]) return resolve();
+    if (charGlts[id]) return resolve();
     new GLTFLoader().load(file, (gltf) => {
-      bossGlts[id] = { scene: gltf.scene, animations: gltf.animations };
+      charGlts[id] = { scene: gltf.scene, animations: gltf.animations };
       resolve();
     }, undefined, () => resolve()); // failed load -> procedural fallback
+  });
+}
+function rebindClone(root: THREE.Object3D) {
+  // must run AFTER the clone's final position/scale are set — the bind matrix
+  // is captured from the mesh's current world matrix
+  scene.updateMatrixWorld(true);
+  root.traverse((o) => {
+    const sm = o as THREE.SkinnedMesh;
+    if (sm.isSkinnedMesh) {
+      const src = sm.skeleton;
+      const bones = src.bones.map((b) => (root.getObjectByName(b.name) as THREE.Bone) || b);
+      sm.bindMode = 'attached';
+      sm.bind(new THREE.Skeleton(bones, src.boneInverses), new THREE.Matrix4().copy(sm.matrixWorld));
+    }
   });
 }
 function bossSetAnim(b: Boss, name: string, loop: boolean, speed = 1) {
@@ -1084,9 +1103,9 @@ function startBoss() {
   toast(`${def.name} — ${def.title}`, 2.6);
   if (def.glb) {
     const ms = def.modelScale ?? 1;
-    loadBossGltf(def.id, def.glb).then(() => {
+    loadCharacterGltf(def.id, def.glb).then(() => {
       if (G.boss !== newBoss) return;
-      const glt = bossGlts[def.id];
+      const glt = charGlts[def.id];
       if (!glt) return;
       const root = glt.scene.clone(true);
       newBoss.group.clear();
@@ -1095,6 +1114,7 @@ function startBoss() {
       // ground-normalize: bind-pose bbox may not sit at y=0 (stool floats, porcelain dips)
       const bbox = new THREE.Box3().setFromObject(root);
       root.position.y = -bbox.min.y;
+      rebindClone(root); // after final transform — bind matrix is captured from world matrix
       root.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) {
@@ -1788,6 +1808,37 @@ window.__game = {
   resurrect,
   openShrine,
   cinematic: (v: boolean) => { G.cinematic = v; },
+  bossScreen: () => {
+    // where does the boss's head render on screen? (NDC -> pixels)
+    if (!G.boss) return null;
+    const box = new THREE.Box3().setFromObject(G.boss.group);
+    const head = box.getCenter(new THREE.Vector3());
+    const v = head.project(camera);
+    const s = box.getSize(new THREE.Vector3());
+    const dist = camera.position.distanceTo(head);
+    const fog = scene.fog as THREE.Fog;
+    return { ndc: [Math.round(v.x * 100) / 100, Math.round(v.y * 100) / 100, Math.round(v.z * 100) / 100], screen: { x: Math.round((v.x + 1) / 2 * 1280), y: Math.round((1 - v.y) / 2 * 720) }, hWorld: Math.round(s.y * 100) / 100, dist: Math.round(dist * 10) / 10, fog: fog ? [fog.near, fog.far] : null };
+  },
+  setFog: (near: number, far: number) => { if (scene.fog) { const f = scene.fog as THREE.Fog; f.near = near; f.far = far; } },
+  poseBoss: (gap = 6, camD = 5, pitch = 0.25) => {
+    // deterministic capture pose: freeze boss AI, stand `gap` in front, camera behind player.
+    // forces a render first so all matrices are fresh.
+    if (!G.boss) return null;
+    const aiFrozen = G.boss.state;
+    (G.boss as any).state = 'dead'; // suspends AI wander (group + mixer still run)
+    renderer.render(scene, camera);
+    const bp = G.boss.group.position;
+    G.pos.set(bp.x, 0, bp.z + gap);
+    G.yaw = Math.PI;
+    G.camYaw = G.camYawT = Math.PI;
+    G.camPitch = G.camPitchT = pitch;
+    G.camDist = G.camDistT = camD;
+    G.locked = null; G.atk = null; G.dodging = 0;
+    renderer.render(scene, camera);
+    const sc = (window.__game as any).bossScreen();
+    G.boss.state = aiFrozen;
+    return sc;
+  },
 };
 
 // ============================== main loop ==============================
