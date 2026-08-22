@@ -32,6 +32,7 @@ export interface MobDef {
   radius: number;      // body radius (hitbox / aggro size)
   color: number;
   scale: number;       // model scale
+  glb?: string;        // optional Blender-modeled model (static mesh, group-scale animated)
   attackRange: number;
   attackCd: number;    // seconds between attacks
   telegraph: number;   // windup time (visible flash) before hit lands

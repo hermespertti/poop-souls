@@ -28,27 +28,32 @@ export const MOBS: Record<string, MobDef> = {
   biber: {
     id: 'biber', name: 'Biber', kind: 'swarm',
     hp: 30, damage: 6, speed: 3.2, souls: 12, radius: 0.35,
-    color: 0xe8dcc8, scale: 0.7, attackRange: 1.6, attackCd: 1.2, telegraph: 0.5, aggro: 13,
+    color: 0xe8dcc8, scale: 0.7, glb: 'mob-biber.glb',
+    attackRange: 1.6, attackCd: 1.2, telegraph: 0.5, aggro: 13,
   },
   clog: {
     id: 'clog', name: 'The Clog', kind: 'tank',
     hp: 120, damage: 16, speed: 1.1, souls: 45, radius: 0.6,
-    color: 0x8a9a7a, scale: 1.6, attackRange: 2.1, attackCd: 2.2, telegraph: 0.9, aggro: 10,
+    color: 0x8a9a7a, scale: 1.6, glb: 'mob-clog.glb',
+    attackRange: 2.1, attackCd: 2.2, telegraph: 0.9, aggro: 10,
   },
   fart: {
     id: 'fart', name: 'Mire Fart', kind: 'ranged',
     hp: 26, damage: 9, speed: 2.4, souls: 16, radius: 0.4,
-    color: 0x7ab04a, scale: 0.9, attackRange: 9, attackCd: 2.6, telegraph: 0.7, aggro: 14,
+    color: 0x7ab04a, scale: 0.9, glb: 'mob-fart.glb',
+    attackRange: 9, attackCd: 2.6, telegraph: 0.7, aggro: 14,
   },
   gloop: {
     id: 'gloop', name: 'Gloop', kind: 'slime',
     hp: 40, damage: 9, speed: 2.0, souls: 18, radius: 0.45,
-    color: 0x6ab0a0, scale: 1.0, attackRange: 1.5, attackCd: 1.8, telegraph: 0.6, aggro: 12,
+    color: 0x6ab0a0, scale: 1.0, glb: 'mob-gloop.glb',
+    attackRange: 1.5, attackCd: 1.8, telegraph: 0.6, aggro: 12,
   },
   gloop_small: {
     id: 'gloop_small', name: 'Glooplet', kind: 'slime',
     hp: 18, damage: 5, speed: 2.6, souls: 6, radius: 0.3,
-    color: 0x6ab0a0, scale: 0.6, attackRange: 1.4, attackCd: 1.6, telegraph: 0.5, aggro: 11,
+    color: 0x6ab0a0, scale: 0.6, glb: 'mob-gloop_small.glb',
+    attackRange: 1.4, attackCd: 1.6, telegraph: 0.5, aggro: 11,
   },
 };
 

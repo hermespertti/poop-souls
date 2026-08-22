@@ -26,3 +26,13 @@ verify-bosses.mjs
 boss-king-*.png
 boss-lord-*.png
 boss-stool-*.png
+
+# mob/player/measure dev artifacts
+mob-*.png
+m-*.png
+pl-*.png
+player-*.png
+prod-*.png
+measure-joints.mjs
+region-probe.mjs
+check-glb.py

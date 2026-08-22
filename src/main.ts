@@ -20,7 +20,7 @@ type Mode = 'title' | 'play' | 'shrine' | 'over' | 'win';
 
 interface Attack { combo: number; t: number; dur: number; hitDone: boolean; }
 interface Mob {
-  def: MobDef; group: THREE.Group; mat: THREE.MeshStandardMaterial;
+  def: MobDef; group: THREE.Group; mat: THREE.MeshStandardMaterial; mats: THREE.MeshStandardMaterial[];
   hp: number; home: THREE.Vector3; cd: number; telegraph: number; telegraphTotal: number;
   hitstun: number; phase: number; aggroed: boolean; dead: boolean; hasSplit: boolean; baseY: number;
   stunFrom: THREE.Vector3 | null;
@@ -394,11 +394,47 @@ function spawnMob(def: MobDef, pos: THREE.Vector3): Mob {
   group.position.copy(pos);
   scene.add(group);
   const m: Mob = {
-    def, group, mat, hp: def.hp, home: pos.clone(), cd: 0.5 + Math.random() * 1.5,
+    def, group, mat, mats: [mat], hp: def.hp, home: pos.clone(), cd: 0.5 + Math.random() * 1.5,
     telegraph: 0, telegraphTotal: 1, hitstun: 0, phase: Math.random() * 6.28,
     aggroed: false, dead: false, hasSplit: false, baseY: 0, stunFrom: null,
   };
   G.mobs.push(m);
+  // GLB swap (async, cached). Root stays UNIT scale — the group carries def.scale
+  // + the squash/stretch from updateMobs. Ground-normalized so the base sits at
+  // the group origin. Materials are cloned per mob so each instance flashes
+  // its own telegraph independently of other same-type mobs.
+  if (def.glb) {
+    loadCharacterGltf('mob:' + def.id, def.glb).then(() => {
+      if (m.dead) return;
+      const glt = charGlts['mob:' + def.id];
+      if (!glt) return;
+      const root = glt.scene.clone(true);
+      root.position.set(0, 0, 0); root.scale.setScalar(1);
+      scene.add(root); root.updateMatrixWorld(true);
+      const gMin = new THREE.Box3().setFromObject(root).min.y;
+      scene.remove(root);
+      m.group.clear();
+      m.group.add(root);
+      root.position.y = -gMin;
+      const mats: THREE.MeshStandardMaterial[] = [];
+      root.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.castShadow = true;
+          const src = mesh.material as THREE.Material;
+          const nm = (src as THREE.MeshStandardMaterial).clone();
+          mesh.material = nm;
+          if (nm.emissive && !mats.includes(nm)) {
+            nm.userData.baseEmissive = nm.emissive.clone();
+            nm.userData.baseIntensity = nm.emissiveIntensity;
+            mats.push(nm);
+          }
+        }
+      });
+      m.mats = mats.length ? mats : m.mats;
+      m.mat = m.mats[0];
+    });
+  }
   return m;
 }
 
@@ -454,10 +490,9 @@ function updateMobs(dt: number) {
     if (m.telegraph > 0) {
       m.telegraph -= dt;
       const f = 1 - m.telegraph / m.telegraphTotal;
-      m.mat.emissive.setHex(0xff4444);
-      m.mat.emissiveIntensity = 0.2 + f * 0.9;
+      for (const matx of m.mats) { matx.emissive.setHex(0xff4444); matx.emissiveIntensity = 0.2 + f * 0.9; }
       if (m.telegraph <= 0) {
-        m.mat.emissiveIntensity = 0;
+        for (const matx of m.mats) matx.emissiveIntensity = 0;
         m.cd = m.def.attackCd;
         if (m.def.kind === 'ranged') {
           if (dist < m.def.attackRange * 1.25) {
@@ -469,7 +504,7 @@ function updateMobs(dt: number) {
         }
       }
     } else {
-      m.mat.emissiveIntensity = 0;
+      for (const matx of m.mats) matx.emissiveIntensity = 0;
       m.cd -= dt;
       const isRanged = m.def.kind === 'ranged';
       const keep = isRanged ? m.def.attackRange * 0.7 : m.def.attackRange * 0.8;
@@ -1683,7 +1718,7 @@ window.__game = {
     weapon: G.weaponIdx, weaponTier: G.save.weaponTiers[G.weaponIdx],
     weaponName: WEAPONS[G.weaponIdx].name,
     kills: G.kills, deaths: G.deaths, level: levelOf(),
-    mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp), x: Math.round(m.group.position.x * 10) / 10, z: Math.round(m.group.position.z * 10) / 10 })),
+    mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp), x: Math.round(m.group.position.x * 10) / 10, z: Math.round(m.group.position.z * 10) / 10, tg: Math.round(m.telegraph * 100) / 100 })),
     yaw: Math.round(G.yaw * 100) / 100,
     cam: { x: Math.round(camera.position.x * 10) / 10, z: Math.round(camera.position.z * 10) / 10 },
     lockPos: G.locked ? { x: Math.round(G.locked.group.position.x * 10) / 10, z: Math.round(G.locked.group.position.z * 10) / 10 } : null,
