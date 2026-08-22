@@ -31,6 +31,12 @@ interface Boss {
   hitstop: number; idle: number; charge: { dir: THREE.Vector3; t: number; dmg: number } | null;
   lunge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
   baseY: number; phase: number;
+  // Blender GLB (optional — null mixer = procedural fallback)
+  mats: THREE.MeshStandardMaterial[];
+  mixer: THREE.AnimationMixer | null;
+  actions: Record<string, THREE.AnimationAction>;
+  curAnim: string;
+  clipUntil: number; // G.time at which the current one-shot attack clip ends
 }
 interface Particle { obj: THREE.Mesh; vel: THREE.Vector3; life: number; max: number; grav: number; }
 interface Proj { obj: THREE.Mesh; dir: THREE.Vector3; speed: number; life: number; dmg: number; radius: number; }
@@ -1032,18 +1038,43 @@ function updateAnim(dt: number) {
 }
 
 // ============================== boss ==============================
+// Blender GLB bosses — parsed once per boss id, scene cloned per instance
+const bossGlts: Record<string, { scene: THREE.Group; animations: THREE.AnimationClip[] }> = {};
+function loadBossGltf(id: string, file: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (bossGlts[id]) return resolve();
+    new GLTFLoader().load(file, (gltf) => {
+      bossGlts[id] = { scene: gltf.scene, animations: gltf.animations };
+      resolve();
+    }, undefined, () => resolve()); // failed load -> procedural fallback
+  });
+}
+function bossSetAnim(b: Boss, name: string, loop: boolean, speed = 1) {
+  if (!b.mixer || !b.actions[name]) return;
+  const next = b.actions[name];
+  if (name === b.curAnim) { next.timeScale = speed; return; }
+  const prev = b.curAnim ? b.actions[b.curAnim] : null;
+  next.reset();
+  next.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+  next.timeScale = speed;
+  next.clampWhenFinished = true;
+  next.play();
+  if (prev) prev.crossFadeTo(next, 0.2, false);
+  b.curAnim = name;
+}
 function startBoss() {
   const zb = G.zoneBuild;
   if (!zb || G.bossActive || G.boss) return;
   const zd = ZONES[G.zone];
   const def = BOSSES[zd.boss];
-  const { group, mat } = makeBossGroup(def);
+  const { group, mat } = makeBossGroup(def); // procedural base (also the fallback)
   group.position.copy(zb.boss);
   scene.add(group);
   const newBoss: Boss = {
     def, group, mat, hp: def.hp, state: 'idle',
     cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55,
     charge: null, lunge: null, targetPos: null, baseY: zb.boss.y, phase: Math.random() * 6.28,
+    mats: [mat], mixer: null, actions: {}, curAnim: '', clipUntil: 0,
   };
   for (const a of Object.keys(def.attacks)) newBoss.cds[a] = 1;
   G.boss = newBoss;
@@ -1051,6 +1082,36 @@ function startBoss() {
   G.bossIntro = 2.4;
   SFX.bossRoar();
   toast(`${def.name} — ${def.title}`, 2.6);
+  if (def.glb) {
+    const ms = def.modelScale ?? 1;
+    loadBossGltf(def.id, def.glb).then(() => {
+      if (G.boss !== newBoss) return;
+      const glt = bossGlts[def.id];
+      if (!glt) return;
+      const root = glt.scene.clone(true);
+      newBoss.group.clear();
+      newBoss.group.add(root);
+      root.scale.setScalar(ms);
+      // ground-normalize: bind-pose bbox may not sit at y=0 (stool floats, porcelain dips)
+      const bbox = new THREE.Box3().setFromObject(root);
+      root.position.y = -bbox.min.y;
+      root.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) {
+          m.castShadow = true;
+          const mm = m.material as THREE.MeshStandardMaterial;
+          if (mm && mm.emissive && !newBoss.mats.includes(mm)) {
+            mm.userData.baseEmissive = mm.emissive.clone();
+            mm.userData.baseIntensity = mm.emissiveIntensity;
+            newBoss.mats.push(mm);
+          }
+        }
+      });
+      newBoss.mixer = new THREE.AnimationMixer(root);
+      for (const clip of glt.animations) newBoss.actions[clip.name] = newBoss.mixer.clipAction(clip);
+      bossSetAnim(newBoss, 'Idle', true);
+    });
+  }
 }
 
 function makeBossGroup(def: BossDef): { group: THREE.Group; mat: THREE.MeshStandardMaterial } {
@@ -1130,9 +1191,12 @@ function bossDefeated() {
 function updateBoss(dt: number) {
   const b = G.boss;
   if (!b || !G.bossActive) return;
+  const hasGlb = !!b.mixer;
+  const glbScale = b.def.modelScale ?? 1;
   if (G.bossIntro > 0) {
     G.bossIntro -= dt;
-    b.group.scale.setScalar(b.def.scale * 0.55 * (1 + Math.sin(G.time * 30) * 0.04));
+    // GLB: root child carries modelScale, keep the group at 1 (avoid double-scaling)
+    b.group.scale.setScalar((hasGlb ? 1 : b.def.scale * 0.55) * (1 + Math.sin(G.time * 30) * 0.04));
     return;
   }
   if (b.hitstop > 0) { b.hitstop -= dt; return; }
@@ -1145,8 +1209,9 @@ function updateBoss(dt: number) {
   const dz = G.pos.z - b.group.position.z;
   const dist = Math.hypot(dx, dz);
   b.group.rotation.y = Math.atan2(dx, dz);
-  // breathing anim
-  b.group.scale.setScalar(b.def.scale * 0.55 * (1 + Math.sin(G.time * 2 + b.phase) * 0.03));
+  // breathing anim (procedural scale only — GLB breathes via its Idle clip)
+  if (!hasGlb) b.group.scale.setScalar(b.def.scale * 0.55 * (1 + Math.sin(G.time * 2 + b.phase) * 0.03));
+  b.mixer?.update(dt);
 
   if (b.charge) {
     b.charge.t -= dt;
@@ -1168,15 +1233,21 @@ function updateBoss(dt: number) {
     b.telegraph -= dt;
     const atk = b.def.attacks[b.current];
     const f = atk.telegraph > 0 ? 1 - b.telegraph / atk.telegraph : 1;
-    b.mat.emissive.setHex(0xff5544);
-    b.mat.emissiveIntensity = 0.15 + f * 0.7;
-    // anticipation: crouch + lean before the strike lands
-    const melee = b.current === 'SeatSwing' || b.current === 'Lurch' || b.current === 'SmearSlap';
-    b.group.position.y = b.baseY - (melee ? f * 0.15 : f * 0.4);
-    b.group.rotation.x = melee ? f * 0.12 : -f * 0.18;
+    for (const m of b.mats) {
+      m.emissive.setHex(0xff5544);
+      m.emissiveIntensity = (m.userData.baseIntensity ?? 0.08) * 0.3 + f * 0.7;
+    }
+    if (!hasGlb) {
+      // procedural fallback: crouch + lean before the strike lands
+      const melee = b.current === 'SeatSwing' || b.current === 'Lurch' || b.current === 'SmearSlap';
+      b.group.position.y = b.baseY - (melee ? f * 0.15 : f * 0.4);
+      b.group.rotation.x = melee ? f * 0.12 : -f * 0.18;
+    }
     if (b.telegraph <= 0) {
-      b.mat.emissive.setHex(b.def.color);
-      b.mat.emissiveIntensity = 0.08;
+      for (const m of b.mats) {
+        m.emissive.copy(m.userData.baseEmissive ?? new THREE.Color(b.def.color));
+        m.emissiveIntensity = m.userData.baseIntensity ?? 0.08;
+      }
       b.group.position.y = b.baseY;
       b.group.rotation.x = 0;
       executeBossAttack(b, atk.damage, atk.range);
@@ -1184,6 +1255,7 @@ function updateBoss(dt: number) {
       b.state = 'idle';
       b.current = '';
       b.idle = 0.35;
+      if (hasGlb) b.clipUntil = G.time + (atk.cd * phase.cdMult) * 0.7; // follow-through window
     }
     return;
   }
@@ -1192,12 +1264,18 @@ function updateBoss(dt: number) {
   const walking = dist > 2.2 && !b.lunge;
   if (walking) {
     b.group.position.add(new THREE.Vector3(dx / (dist || 1), 0, dz / (dist || 1)).multiplyScalar(walkSpd * dt));
-    // heavy-footed walk: bob + side-to-side sway
-    b.group.position.y = b.baseY + Math.abs(Math.sin(G.time * 7 + b.phase)) * 0.16;
-    b.group.rotation.z = Math.sin(G.time * 3.5 + b.phase) * 0.05;
+    if (!hasGlb) {
+      // heavy-footed walk: bob + side-to-side sway (GLB plays its Walk clip)
+      b.group.position.y = b.baseY + Math.abs(Math.sin(G.time * 7 + b.phase)) * 0.16;
+      b.group.rotation.z = Math.sin(G.time * 3.5 + b.phase) * 0.05;
+    }
   } else {
     b.group.position.y = THREE.MathUtils.lerp(b.group.position.y, b.baseY, 1 - Math.exp(-8 * dt));
     b.group.rotation.z = THREE.MathUtils.lerp(b.group.rotation.z, 0, 1 - Math.exp(-8 * dt));
+  }
+  // GLB locomotion anim (attack clip holds until clipUntil, then resume)
+  if (hasGlb && b.state === 'idle' && G.time > b.clipUntil && b.curAnim !== (walking ? 'Walk' : 'Idle')) {
+    bossSetAnim(b, walking ? 'Walk' : 'Idle', true, walking ? 0.85 : 1);
   }
   for (const a of Object.keys(b.cds)) b.cds[a] -= dt;
   b.idle -= dt;
@@ -1212,6 +1290,13 @@ function updateBoss(dt: number) {
     b.telegraph = b.def.attacks[pick].telegraph;
     b.idle = 0.55;
     if (pick === 'MeteorDrop') b.targetPos = G.pos.clone();
+    // GLB: time the attack clip so its authored hit frame lands exactly at telegraph end
+    if (hasGlb && b.actions[pick]) {
+      const a2 = b.def.attacks[pick];
+      const speed = a2.hitF ? (a2.hitF - 1) / 30 / a2.telegraph : 1;
+      bossSetAnim(b, pick, false, speed);
+      b.clipUntil = G.time + a2.telegraph + 0.6; // hold pose a beat past the hit
+    }
   }
 }
 
@@ -1582,7 +1667,12 @@ window.__game = {
     yaw: Math.round(G.yaw * 100) / 100,
     cam: { x: Math.round(camera.position.x * 10) / 10, z: Math.round(camera.position.z * 10) / 10 },
     lockPos: G.locked ? { x: Math.round(G.locked.group.position.x * 10) / 10, z: Math.round(G.locked.group.position.z * 10) / 10 } : null,
-    boss: G.boss ? { active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp, state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10 } : null,
+    boss: G.boss ? {
+      active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp,
+      state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10,
+      x: Math.round(G.boss.group.position.x * 10) / 10, z: Math.round(G.boss.group.position.z * 10) / 10,
+      glb: G.boss.mixer ? { loaded: true, anim: G.boss.curAnim } : { loaded: false, anim: 'procedural' },
+    } : null,
     orbSouls: G.orb ? G.orb.souls : 0,
     flask: { charges: G.save.flaskCharges, max: G.save.flaskMax, drinking: Math.round(G.flaskDrinking * 100) / 100 },
     gritDrops: G.gritDrops.length,
@@ -1654,6 +1744,47 @@ window.__game = {
     G.stamina = stMax();
   },
   setBossHp: (n: number) => { if (G.boss) G.boss.hp = Math.max(1, Math.min(G.boss.def.hp, n)); },
+  bossGlow: (on: boolean) => {
+    if (!G.boss) return false;
+    for (const m of G.boss.mats) {
+      if (on) { m.emissive.setHex(0xffffff); m.emissiveIntensity = 0.9; }
+      else { m.emissive.copy(m.userData.baseEmissive ?? new THREE.Color(G.boss.def.color)); m.emissiveIntensity = m.userData.baseIntensity ?? 0.08; }
+    }
+    return true;
+  },
+  bossBox: () => {
+    if (!G.boss) return null;
+    const box = new THREE.Box3().setFromObject(G.boss.group);
+    const s = box.getSize(new THREE.Vector3());
+    const r = (v: number) => Math.round(v * 100) / 100;
+    return {
+      min: [r(box.min.x), r(box.min.y), r(box.min.z)],
+      max: [r(box.max.x), r(box.max.y), r(box.max.z)],
+      size: [r(s.x), r(s.y), r(s.z)],
+      groupScale: r(G.boss.group.scale.x),
+      childScale: G.boss.group.children[0] ? r(G.boss.group.children[0].scale.x) : -1,
+      pos: [r(G.boss.group.position.x), r(G.boss.group.position.y), r(G.boss.group.position.z)],
+    };
+  },
+  bossAttack: (name: string) => {
+    if (G.boss && G.boss.def.attacks[name] && G.bossIntro <= 0) {
+      const b = G.boss;
+      b.state = 'windup';
+      b.current = name;
+      b.telegraph = b.def.attacks[name].telegraph;
+      b.idle = 0;
+      if (name === 'MeteorDrop') b.targetPos = G.pos.clone();
+      // same clip wiring as the natural idle->windup transition
+      if (b.mixer && b.actions[name]) {
+        const a2 = b.def.attacks[name];
+        const speed = a2.hitF ? (a2.hitF - 1) / 30 / a2.telegraph : 1;
+        bossSetAnim(b, name, false, speed);
+        b.clipUntil = G.time + a2.telegraph + 0.6;
+      }
+    }
+    return G.boss ? G.boss.state : null;
+  },
+  bossAnim: (name: string) => { if (G.boss && G.boss.mixer && G.boss.actions[name]) { bossSetAnim(G.boss, name, false, 1); return G.boss.curAnim; } return G.boss ? G.boss.curAnim : null; },
   resurrect,
   openShrine,
   cinematic: (v: boolean) => { G.cinematic = v; },

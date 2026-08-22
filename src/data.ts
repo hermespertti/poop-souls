@@ -56,10 +56,11 @@ export const BOSSES: Record<string, BossDef> = {
   porcelain_king: {
     id: 'porcelain_king', name: 'The Porcelain King', title: 'Warden of the Seat',
     hp: 600, souls: 250, color: 0xe8e8f0, scale: 2.0,
+    glb: 'boss-porcelain.glb', modelScale: 1.1,
     attacks: {
-      SeatSwing: { damage: 22, telegraph: 0.7, cd: 1.6, range: 3.0 },
-      SeatSlam: { damage: 18, telegraph: 1.0, cd: 3.0, range: 4.5 },
-      Spin: { damage: 16, telegraph: 0.8, cd: 3.5, range: 3.5 },
+      SeatSwing: { damage: 22, telegraph: 0.7, cd: 1.6, range: 3.0, hitF: 21 },
+      SeatSlam: { damage: 18, telegraph: 1.0, cd: 3.0, range: 4.5, hitF: 30 },
+      Spin: { damage: 16, telegraph: 0.8, cd: 3.5, range: 3.5, hitF: 24 },
     },
     phases: [
       { hpFrac: 0.5, attacks: ['SeatSwing', 'SeatSlam'], cdMult: 1 },
@@ -69,11 +70,12 @@ export const BOSSES: Record<string, BossDef> = {
   overflow_lord: {
     id: 'overflow_lord', name: 'Lord of the Overflow', title: 'He Who Spills',
     hp: 1000, souls: 400, color: 0x6a8a3a, scale: 2.2,
+    glb: 'boss-overflow.glb', modelScale: 1.5,
     attacks: {
-      Lurch: { damage: 20, telegraph: 0.6, cd: 1.8, range: 3.0 },
-      BodySlam: { damage: 26, telegraph: 1.1, cd: 3.2, range: 5.0 },
-      GasCloud: { damage: 12, telegraph: 1.3, cd: 4.0, range: 6.0 },
-      BloatCharge: { damage: 30, telegraph: 0.9, cd: 5.0, range: 9.0 },
+      Lurch: { damage: 20, telegraph: 0.6, cd: 1.8, range: 3.0, hitF: 14 },
+      BodySlam: { damage: 26, telegraph: 1.1, cd: 3.2, range: 5.0, hitF: 27 },
+      GasCloud: { damage: 12, telegraph: 1.3, cd: 4.0, range: 6.0, hitF: 34 },
+      BloatCharge: { damage: 30, telegraph: 0.9, cd: 5.0, range: 9.0, hitF: 24 },
     },
     phases: [
       { hpFrac: 0.6, attacks: ['Lurch', 'BodySlam'], cdMult: 1 },
@@ -84,12 +86,13 @@ export const BOSSES: Record<string, BossDef> = {
   great_stool: {
     id: 'great_stool', name: 'The Great Stool', title: 'The First Filth',
     hp: 1600, souls: 700, color: 0x5a4632, scale: 3.0,
+    glb: 'boss-stool.glb', modelScale: 2.0,
     attacks: {
-      SmearSlap: { damage: 24, telegraph: 0.7, cd: 1.8, range: 3.5 },
-      MeteorDrop: { damage: 30, telegraph: 1.4, cd: 4.0, range: 7.0 },
-      CorePulse: { damage: 14, telegraph: 0.9, cd: 3.0, range: 5.0 },
-      WallOfFilth: { damage: 18, telegraph: 1.5, cd: 6.0, range: 10.0 },
-      PrimordialRoar: { damage: 10, telegraph: 1.6, cd: 8.0, range: 12.0 },
+      SmearSlap: { damage: 24, telegraph: 0.7, cd: 1.8, range: 3.5, hitF: 15 },
+      MeteorDrop: { damage: 30, telegraph: 1.4, cd: 4.0, range: 7.0, hitF: 34 },
+      CorePulse: { damage: 14, telegraph: 0.9, cd: 3.0, range: 5.0, hitF: 21 },
+      WallOfFilth: { damage: 18, telegraph: 1.5, cd: 6.0, range: 10.0, hitF: 37 },
+      PrimordialRoar: { damage: 10, telegraph: 1.6, cd: 8.0, range: 12.0, hitF: 40 },
     },
     phases: [
       { hpFrac: 0.66, attacks: ['SmearSlap', 'MeteorDrop'], cdMult: 1 },

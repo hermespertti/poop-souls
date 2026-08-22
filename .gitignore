@@ -18,3 +18,11 @@ Thumbs.db
 og-raw.png
 shot-*.png
 __pycache__/
+
+# boss capture dev artifacts
+cap-*.png
+cap-*.mjs
+verify-bosses.mjs
+boss-king-*.png
+boss-lord-*.png
+boss-stool-*.png

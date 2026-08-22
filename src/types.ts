@@ -44,6 +44,7 @@ export interface BossAttack {
   telegraph: number;   // windup seconds (visible)
   cd: number;          // seconds
   range: number;       // hit range from boss
+  hitF?: number;       // GLB clip frame (30fps) where the hit lands; clip timescaled to match telegraph
 }
 
 export interface BossDef {
@@ -55,6 +56,9 @@ export interface BossDef {
   color: number;
   scale: number;
   attacks: Record<string, BossAttack>;
+  // Blender GLB (optional — falls back to procedural mesh)
+  glb?: string;        // e.g. 'boss-porcelain.glb' in public/
+  modelScale?: number; // world-unit scale for the GLB root
   // phases evaluated top-down: first phase whose hpFrac >= current HP fraction wins.
   phases: { hpFrac: number; attacks: string[]; cdMult: number }[];
 }
