@@ -22,6 +22,8 @@ __pycache__/
 # boss capture dev artifacts
 cap-*.png
 cap-*.mjs
+cap-m5*.mjs
+m5-*.png
 verify-bosses.mjs
 boss-king-*.png
 boss-lord-*.png
