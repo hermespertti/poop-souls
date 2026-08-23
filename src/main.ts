@@ -126,15 +126,31 @@ function toast(text: string, dur = 1.8) {
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101318);
-scene.fog = new THREE.Fog(0x101318, 8, 40);
+scene.background = new THREE.Color(0x0a0c10);
+scene.fog = new THREE.Fog(0x0a0c10, 8, 40);
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 200);
-const hemi = new THREE.HemisphereLight(0xffffff, 0x333344, 0.9);
+// M4 dark-but-atmospheric: one dim hemisphere carries the base — per-zone tint
+// + intensity are applied in loadZone. No second hemi in world.ts.
+const hemi = new THREE.HemisphereLight(0xffffff, 0x222630, 0.35);
 scene.add(hemi);
-const keyLight = new THREE.DirectionalLight(0xfff0e0, 0.5);
-keyLight.position.set(6, 10, 4);
+// cool shadow-casting key light that follows the player (tight frustum => sharp
+// shadows around the action, the rest falls into the dark)
+const keyLight = new THREE.DirectionalLight(0xbfd0ff, 0.55);
+keyLight.position.set(6, 14, 5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.camera.left = -14; keyLight.shadow.camera.right = 14;
+keyLight.shadow.camera.top = 14; keyLight.shadow.camera.bottom = -14;
+keyLight.shadow.camera.near = 1; keyLight.shadow.camera.far = 40;
+keyLight.shadow.bias = -0.0015;
 scene.add(keyLight);
+scene.add(keyLight.target);
+let exposureTarget = 1.0; // eases down on death, back up on resurrection
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -849,6 +865,7 @@ function die() {
   G.save.souls = 0;
   burst(G.pos.clone().setY(1), 0x4a6a8a, 24, 4, 0.9, 0.1);
   G.mode = 'over';
+  exposureTarget = 0.55; // the world dims on death
   MUS.duck(true); // quiet the ambience behind the death screen
   const sub = G.orb.souls > 0 ? `${G.orb.souls} souls dropped at the scene of the crime. Die again before you grab them and they're gone.` : 'No souls to lose. At least something.';
   $('overSub').textContent = sub;
@@ -862,6 +879,7 @@ function resurrect() {
   G.pos = zb.bonfire.clone().add(new THREE.Vector3(1.5, 0, 1.5));
   G.hitstun = 0; G.iframes = 1; G.atk = null; G.dodging = 0;
   G.mode = 'play';
+  exposureTarget = 1.0;
   SFX.bonfire();
   MUS.duck(false); // back to full ambience after the death screen
   save();
@@ -1135,6 +1153,14 @@ function bossSetAnim(b: Boss, name: string, loop: boolean, speed = 1) {
   if (prev) prev.crossFadeTo(next, 0.2, false);
   b.curAnim = name;
 }
+function attachTelegraphLight(group: THREE.Group) {
+  // M4: red point light that ramps in with the windup — the boss literally glows
+  // with incoming danger even when the camera is far.
+  const l = new THREE.PointLight(0xff3322, 0, 9, 2);
+  l.position.set(0, 2.4, 0);
+  group.add(l);
+  (group.userData as any).tlight = l;
+}
 function startBoss() {
   const zb = G.zoneBuild;
   if (!zb || G.bossActive || G.boss) return;
@@ -1142,6 +1168,7 @@ function startBoss() {
   const def = BOSSES[zd.boss];
   const { group, mat } = makeBossGroup(def); // procedural base (also the fallback)
   group.position.copy(zb.boss);
+  attachTelegraphLight(group);
   scene.add(group);
   const newBoss: Boss = {
     def, group, mat, hp: def.hp, state: 'idle',
@@ -1165,6 +1192,7 @@ function startBoss() {
       const root = glt.scene.clone(true);
       newBoss.group.clear();
       newBoss.group.add(root);
+      attachTelegraphLight(newBoss.group); // group.clear() destroyed the procedural one
       root.scale.setScalar(ms);
       // ground-normalize: bind-pose bbox may not sit at y=0 (stool floats, porcelain dips)
       const bbox = new THREE.Box3().setFromObject(root);
@@ -1309,6 +1337,8 @@ function updateBoss(dt: number) {
     b.telegraph -= dt;
     const atk = b.def.attacks[b.current];
     const f = atk.telegraph > 0 ? 1 - b.telegraph / atk.telegraph : 1;
+    const tl = (b.group.userData as any).tlight as THREE.PointLight | undefined;
+    if (tl) tl.intensity = 4 + f * 30 + 2 * Math.sin(G.time * 40); // ramping, strobing red — decay² makes far values moot; this paints a red pool
     for (const m of b.mats) {
       m.emissive.setHex(0xff5544);
       m.emissiveIntensity = (m.userData.baseIntensity ?? 0.08) * 0.3 + f * 0.7;
@@ -1320,6 +1350,7 @@ function updateBoss(dt: number) {
       b.group.rotation.x = melee ? f * 0.12 : -f * 0.18;
     }
     if (b.telegraph <= 0) {
+      if (tl) tl.intensity = 0;
       for (const m of b.mats) {
         m.emissive.copy(m.userData.baseEmissive ?? new THREE.Color(b.def.color));
         m.emissiveIntensity = m.userData.baseIntensity ?? 0.08;
@@ -1881,6 +1912,12 @@ window.__game = {
     return { ndc: [Math.round(v.x * 100) / 100, Math.round(v.y * 100) / 100, Math.round(v.z * 100) / 100], screen: { x: Math.round((v.x + 1) / 2 * 1280), y: Math.round((1 - v.y) / 2 * 720) }, hWorld: Math.round(s.y * 100) / 100, dist: Math.round(dist * 10) / 10, fog: fog ? [fog.near, fog.far] : null };
   },
   setFog: (near: number, far: number) => { if (scene.fog) { const f = scene.fog as THREE.Fog; f.near = near; f.far = far; } },
+  tlightIntensity: () => {
+    const b = G.boss;
+    if (!b) return -1;
+    const tl = (b.group.userData as any).tlight as THREE.PointLight | undefined;
+    return tl ? Math.round(tl.intensity * 100) / 100 : -2;
+  },
   poseBoss: (gap = 6, camD = 5, pitch = 0.25) => {
     if (!G.boss) return null;
     const aiFrozen = G.boss.state;
@@ -1953,6 +1990,23 @@ function frame() {
         (shrine.object.userData.bowlMat as THREE.MeshStandardMaterial).emissiveIntensity = 0.7 + Math.sin(G.time * 2) * 0.25;
       }
     }
+  }
+  // M4 atmospheric: flicker the local lights, follow the shadow key, ease exposure
+  {
+    const zb = G.zoneBuild;
+    if (zb?.dynamic) {
+      const d = zb.dynamic, t = G.time;
+      const fl = (s: number) => 1 + 0.14 * Math.sin(t * 13.7 + s) + 0.1 * Math.sin(t * 29.3 + s * 2.1) + 0.06 * Math.sin(t * 7.3 + s * 3.7);
+      d.fire.intensity = (d.fire.userData.base as number) * fl(0);
+      for (let i = 0; i < d.torches.length; i++) d.torches[i].intensity = (d.torches[i].userData.base as number) * fl(i * 1.7 + 5);
+      for (let i = 0; i < d.braziers.length; i++) d.braziers[i].intensity = (d.braziers[i].userData.base as number) * fl(i * 2.3 + 9);
+      d.shrine.intensity = (d.shrine.userData.base as number) * (0.92 + 0.08 * Math.sin(t * 1.3));
+      d.door.intensity = (d.door.userData.base as number) * (0.85 + 0.15 * Math.sin(t * 0.9 + 1));
+      d.center.intensity = (d.center.userData.base as number) * (0.95 + 0.05 * Math.sin(t * 0.6));
+    }
+    keyLight.position.set(G.pos.x + 6, 14, G.pos.z + 5);
+    keyLight.target.position.copy(G.pos);
+    renderer.toneMappingExposure += (exposureTarget - renderer.toneMappingExposure) * (1 - Math.exp(-2.5 * dt));
   }
   updateParticles(dt);
   updateDrops(dt);

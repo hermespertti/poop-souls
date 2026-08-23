@@ -21,6 +21,15 @@ export interface ZoneBuild {
   boss: THREE.Vector3;
   pillars: { x: number; z: number }[];
   propColliders: { x: number; z: number; r: number }[];
+  // M4: flicker-driven local lights (bonfire, torches, braziers, shrine, door, center)
+  dynamic: {
+    fire: THREE.PointLight;
+    torches: THREE.PointLight[];
+    braziers: THREE.PointLight[];
+    shrine: THREE.PointLight;
+    door: THREE.PointLight;
+    center: THREE.PointLight;
+  };
   ambient: {
     fog: number; fogNear: number; fogFar: number; background: number;
     hemiSky: number; hemiGround: number; hemiIntensity: number; light: number;
@@ -42,7 +51,6 @@ export function propLayout(zoneIndex: number): PropSpawn[] {
   const size = zone.size;
   const rand = mulberry32(777 + zoneIndex * 131);
   const out: PropSpawn[] = [];
-  // keep props off the key functional anchors
   const anchors: { x: number; z: number; keep: number }[] = [
     { x: 0, z: -size + 8, keep: 6.5 },      // boss arena / platform
     { x: -size + 4, z: -size + 4, keep: 6 }, // bonfire
@@ -144,6 +152,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     new THREE.MeshStandardMaterial({ color: zone.floor, roughness: 0.95 }),
   );
   floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
   root.add(floor);
 
   // ---------------- walls ----------------
@@ -152,6 +161,8 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   const mkWall = (w: number, d: number, x: number, z: number) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), wallMat);
     m.position.set(x, wallH / 2, z);
+    m.receiveShadow = true;
+    m.castShadow = true;
     root.add(m);
   };
   mkWall(size * 2 + wallT * 2, wallT, 0, -size); // north (boss)
@@ -184,30 +195,49 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   for (const p of pillars) {
     const col = new THREE.Mesh(new THREE.BoxGeometry(0.8, 5, 0.8), pillarMat);
     col.position.set(p.x, 2.5, p.z);
+    col.castShadow = true;
+    col.receiveShadow = true;
     root.add(col);
     const cap = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.2, 1.0), capMat);
     cap.position.set(p.x, 5, p.z);
     root.add(cap);
   }
 
-  // ---------------- lighting ----------------
-  const hemiSky = lightened(zone.fog, 0.4);
-  const hemiGround = darkened(zone.floor, 0.3);
-  const hemi = new THREE.HemisphereLight(hemiSky, hemiGround, 0.9);
-  root.add(hemi);
-  const centerLight = new THREE.PointLight(zone.accent, 12, 34, 2);
+  // ---------------- lighting (M4 dark-but-atmospheric) ----------------
+  // No local hemisphere here — the single global dim hemi (main.ts) carries the
+  // base, tinted per-zone via the ambient config below. Everything else is local
+  // pools of light that the game loop flickers: a center accent, torches, the
+  // bonfire, shrine + boss-door glows, and gold braziers in the throne hall.
+  const ATMOS: {
+    hemiInt: number; fogMul: number;
+    center: number; centerInt: number;
+    torchInt: number; fireInt: number; shrineInt: number; doorInt: number;
+  }[] = [
+    // hollow: cold blue mist, warm torchlight pools
+    { hemiInt: 0.45, fogMul: 0.72, center: 0xffc878, centerInt: 10, torchInt: 6, fireInt: 16, shrineInt: 6, doorInt: 5 },
+    // marsh: near-pitch black, sickly green
+    { hemiInt: 0.32, fogMul: 0.62, center: 0x7aff9a, centerInt: 8, torchInt: 5, fireInt: 15, shrineInt: 6, doorInt: 5 },
+    // throne: purple gloom, gold + pink — lifted so the hall reads
+    { hemiInt: 0.44, fogMul: 0.80, center: 0xffc060, centerInt: 15, torchInt: 8, fireInt: 16, shrineInt: 6, doorInt: 8 },
+  ];
+  const at = ATMOS[zoneIndex] ?? ATMOS[0];
+  const hemiSky = lightened(zone.fog, 0.35);
+  const hemiGround = darkened(zone.floor, 0.35);
+  const centerLight = new THREE.PointLight(at.center, at.centerInt, 36, 2);
+  centerLight.userData.base = at.centerInt;
   centerLight.position.set(0, 7, -size / 2);
   root.add(centerLight);
 
-  // torches: 4 sconces, 2 with point lights
+  // torches: 4 sconces, all with flickering point lights
   const flameMat = new THREE.MeshBasicMaterial({ color: zone.accent });
   const sconceMat = new THREE.MeshStandardMaterial({ color: darkened(zone.wall, 0.4) });
-  const torchPos: { x: number; z: number; ly: boolean }[] = [
-    { x: -size + 0.4, z: -size / 2, ly: true },
-    { x: size - 0.4, z: -size / 2, ly: true },
-    { x: -size / 2, z: size - 0.4, ly: false },
-    { x: size / 2, z: size - 0.4, ly: false },
+  const torchPos: { x: number; z: number }[] = [
+    { x: -size + 0.4, z: -size / 2 },
+    { x: size - 0.4, z: -size / 2 },
+    { x: -size / 2, z: size - 0.4 },
+    { x: size / 2, z: size - 0.4 },
   ];
+  const torchLights: THREE.PointLight[] = [];
   for (const tp of torchPos) {
     const g = new THREE.Group();
     const sconce = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.5, 0.2), sconceMat);
@@ -217,11 +247,11 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     g.add(sconce, flame);
     g.position.set(tp.x, 0, tp.z);
     root.add(g);
-    if (tp.ly) {
-      const pl = new THREE.PointLight(zone.accent, 6, 12, 2);
-      pl.position.set(tp.x, 2.5, tp.z);
-      root.add(pl);
-    }
+    const pl = new THREE.PointLight(zone.accent, at.torchInt, 13, 2);
+    pl.userData.base = at.torchInt;
+    pl.position.set(tp.x, 2.5, tp.z);
+    root.add(pl);
+    torchLights.push(pl);
   }
 
   // ---------------- bonfire (toilet bonfire) ----------------
@@ -244,7 +274,8 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   const f2 = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 8), fireMat);
   f2.position.y = 1.35;
   fireGroup.add(f1, f2);
-  const fireLight = new THREE.PointLight(0xff9030, 10, 14, 2);
+  const fireLight = new THREE.PointLight(0xff9030, at.fireInt, 17, 2);
+  fireLight.userData.base = at.fireInt;
   fireLight.position.y = 1.3;
   fireGroup.add(fireLight);
   fireGroup.position.copy(bonfirePos);
@@ -280,6 +311,10 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     shrineGroup.add(post);
   }
   shrineGroup.position.copy(shrinePos);
+  const shrineLight = new THREE.PointLight(zone.accent, at.shrineInt, 11, 2);
+  shrineLight.userData.base = at.shrineInt;
+  shrineLight.position.y = 1.3;
+  shrineGroup.add(shrineLight);
   shrineGroup.userData.bowlMat = shrineBowlMat;
   root.add(shrineGroup);
 
@@ -304,7 +339,25 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   doorRing.position.set(0, 2.0, 0.25);
   doorGroup.add(pL, pR, lintel, slab, doorRing);
   doorGroup.position.set(0, 0, -size);
+  const doorLight = new THREE.PointLight(zone.accent, at.doorInt, 12, 2);
+  doorLight.userData.base = at.doorInt;
+  doorLight.position.set(0, 2.2, 1.1);
+  doorGroup.add(doorLight);
   root.add(doorGroup);
+
+  // throne hall: gold fire in each brazier — positions come from the prop layout
+  // so the glow exists before the GLB kit arrives
+  const brazierLights: THREE.PointLight[] = [];
+  if (zoneIndex === 2) {
+    for (const sp of propLayout(2)) {
+      if (sp.prop !== 'throne_brazier') continue;
+      const bl = new THREE.PointLight(0xffb050, 7, 10, 2);
+      bl.userData.base = 7;
+      bl.position.set(sp.x, 1.1 * sp.scale, sp.z);
+      root.add(bl);
+      brazierLights.push(bl);
+    }
+  }
 
   // ---------------- boss platform ----------------
   const platform = new THREE.Mesh(
@@ -312,6 +365,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     new THREE.MeshStandardMaterial({ color: lightened(zone.floor, 0.15), roughness: 0.9 }),
   );
   platform.position.set(0, 0.15, -size + 8);
+  platform.receiveShadow = true;
   root.add(platform);
   // floor plates around the platform
   const plateMat = new THREE.MeshStandardMaterial({ color: lightened(zone.floor, 0.08), roughness: 0.95 });
@@ -326,12 +380,12 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   const ambient = {
     fog: zone.fog,
     fogNear: zone.fogNear,
-    fogFar: zone.fogFar,
-    background: darkened(zone.fog, 0.4),
+    fogFar: zone.fogFar * at.fogMul,
+    background: darkened(zone.fog, 0.62),
     hemiSky,
     hemiGround,
-    hemiIntensity: 0.9,
-    light: 12,
+    hemiIntensity: at.hemiInt,
+    light: at.centerInt,
   };
 
   const interactables: Interactable[] = [
@@ -351,6 +405,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     boss: new THREE.Vector3(0, 0.35, -size + 8),
     pillars,
     propColliders: propLayoutArr.filter((p) => p.r > 0).map((p) => ({ x: p.x, z: p.z, r: p.r * p.scale })),
+    dynamic: { fire: fireLight, torches: torchLights, braziers: brazierLights, shrine: shrineLight, door: doorLight, center: centerLight },
     ambient,
   };
 }
