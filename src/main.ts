@@ -64,6 +64,8 @@ const G = {
   blockHeld: false, blockStart: -9,
   dodging: 0, dodgeCd: 0, dodgeDir: new THREE.Vector3(0, 0, 1),
   iframes: 0, hitstun: 0, hurtFlash: 0, blockChipT: 0,
+  // M3 juice
+  shake: 0, gameHitstop: 0, juicePops: 0, juiceStops: 0,
   // M5 verticality: altitude above the ground (0 = ground, walkH = gallery)
   alt: 0, vy: 0, climb: null as { target: number; x: number; z: number } | null,
   weaponIdx: 0,
@@ -644,6 +646,63 @@ function updateParticles(dt: number) {
   }
 }
 
+// ============================== M3 juice: damage numbers + shake ==============================
+const dmgWrap = $('dmgWrap');
+interface DmgPop { el: HTMLDivElement; x: number; y: number; vx: number; vy: number; life: number; max: number; }
+const dmgPops: DmgPop[] = [];
+const _proj = new THREE.Vector3();
+function worldToScreen(p: THREE.Vector3): { x: number; y: number; z: number } {
+  _proj.copy(p).project(camera);
+  return { x: (_proj.x + 1) / 2 * window.innerWidth, y: (1 - _proj.y) / 2 * window.innerHeight, z: _proj.z };
+}
+// floating number over a world point; kind picks color + scale
+function dmgPopup(world: THREE.Vector3, text: string, kind: 'deal' | 'taken' | 'crit' | 'heal') {
+  if (dmgPops.length > 24) { const d = dmgPops.shift(); if (d) d.el.remove(); }
+  const el = document.createElement('div');
+  el.className = 'dmg';
+  el.textContent = text;
+  const color = kind === 'taken' ? '#ff6a5a' : kind === 'heal' ? '#6ab8ff' : kind === 'crit' ? '#ffd24a' : '#f2ead6';
+  const size = kind === 'crit' ? 26 : kind === 'taken' ? 19 : kind === 'heal' ? 17 : 15;
+  el.style.color = color;
+  el.style.fontSize = size + 'px';
+  dmgWrap.appendChild(el);
+  const s = worldToScreen(world);
+  dmgPops.push({
+    el,
+    x: s.x + (Math.random() - 0.5) * 26,
+    y: s.y + (Math.random() - 0.5) * 14,
+    vx: (Math.random() - 0.5) * 40,
+    vy: -70 - Math.random() * 40,
+    life: kind === 'crit' ? 1.1 : 0.85,
+    max: kind === 'crit' ? 1.1 : 0.85,
+  });
+  G.juicePops++; // cumulative counter — tests diff this
+}
+function updateDamagePops(dt: number) {
+  for (let i = dmgPops.length - 1; i >= 0; i--) {
+    const p = dmgPops[i];
+    p.life -= dt;
+    if (p.life <= 0) { p.el.remove(); dmgPops.splice(i, 1); continue; }
+    p.vy += 60 * dt; // slow gravity
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    const t = p.life / p.max;
+    p.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%,-50%) scale(${1 + (1 - t) * 0.25})`;
+    p.el.style.opacity = t < 0.35 ? String(t / 0.35) : '1';
+  }
+}
+// camera shake impulse (added on top of the smooth follow)
+function shakeCamera(amt: number) { G.shake = Math.min(0.5, G.shake + amt); }
+function applyShake(dt: number) {
+  if (G.shake <= 0.001) { G.shake = 0; return; }
+  G.shake *= Math.exp(-7 * dt);
+  const a = G.shake;
+  camera.position.x += (Math.random() - 0.5) * a;
+  camera.position.y += (Math.random() - 0.5) * a;
+  camera.position.z += (Math.random() - 0.5) * a;
+  camera.rotation.z += (Math.random() - 0.5) * a * 0.35;
+}
+
 // ============================== souls & grit ==============================
 function makeOrbMesh(): THREE.Mesh {
   const obj = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), new THREE.MeshBasicMaterial({ color: 0x7fb8ff, transparent: true, opacity: 0.95 }));
@@ -809,6 +868,11 @@ function doPlayerHit() {
     const hitPos = (t.obj.position as THREE.Vector3).clone().setY(1);
     burst(hitPos, t.isBoss ? 0xffffff : 0xd8d4c8, 8, 3.5, 0.4, 0.07);
     if (t.isBoss) { SFX.bossHit(); G.boss!.hitstop = 0.12; } else SFX.hitEnemy();
+    // M3 juice: shake + hitstop + floating number
+    shakeCamera(t.isBoss ? 0.1 : 0.06);
+    G.gameHitstop = Math.max(G.gameHitstop, t.isBoss ? 0.06 : 0.035);
+    G.juiceStops++;
+    dmgPopup(hitPos.clone().add(new THREE.Vector3(0, 0.9, 0)), String(Math.round(dmg)), t.behind ? 'crit' : 'deal');
     if (!t.isBoss) {
       const m = G.mobs.find((mm) => mm.group === t.obj);
       if (m) {
@@ -856,6 +920,11 @@ function damagePlayer(raw: number, melee: boolean) {
     SFX.hitPlayer();
   }
   G.hurtFlash = 0.4;
+  // M3 juice: hurt shake + red floating number
+  shakeCamera(0.16);
+  G.gameHitstop = Math.max(G.gameHitstop, 0.07);
+  G.juiceStops++;
+  dmgPopup(G.pos.clone().setY(1.7), '-' + Math.round(dmg), 'taken');
   G.hp -= dmg;
   if (G.hp <= 0) { G.hp = 0; die(); }
 }
@@ -1470,9 +1539,13 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
     const dir = new THREE.Vector3(G.pos.x - p.x, 0, G.pos.z - p.z).normalize();
     b.lunge = { dir, t: 0.18 };
     burst(p.clone().setY(1.4), b.def.color, 10, 4, 0.4, 0.1);
+    shakeCamera(0.07);
   } else if (atk === 'SeatSlam' || atk === 'BodySlam' || atk === 'CorePulse') {
     if (dist < range) damagePlayer(dmg, true);
     burst(p.clone().setY(0.5), b.def.color, 20, 6, 0.6, 0.12);
+    burst(p.clone().setY(0.3), 0x5a4632, 14, 4, 0.5, 0.1); // M3: dust ring on the impact
+    shakeCamera(0.22);
+    G.gameHitstop = Math.max(G.gameHitstop, 0.08);
   } else if (atk === 'Spin') {
     if (dist < range + 0.6) damagePlayer(dmg, true);
     for (let i = 0; i < 14; i++) {
@@ -1482,6 +1555,7 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
   } else if (atk === 'MeteorDrop') {
     if (b.targetPos && G.pos.distanceTo(b.targetPos) < 2.4) damagePlayer(dmg, false);
     burst((b.targetPos ?? p).clone().setY(0.5), 0x5a4632, 26, 6, 0.8, 0.16);
+    shakeCamera(0.14); // M3: meteor thump
     b.targetPos = null;
   } else if (atk === 'GasCloud') {
     spawnCloud(p, 3, 4, dmg);
@@ -1496,6 +1570,7 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
     if (dist < range) damagePlayer(dmg, false);
     burst(p.clone().setY(2), b.def.color, 30, 8, 0.7, 0.14);
     SFX.bossRoar();
+    shakeCamera(0.14); // M3: roar tremor
   }
 }
 
@@ -1858,6 +1933,9 @@ window.__game = {
     stats: { ...G.save.stats },
     pos: { x: Math.round(G.pos.x * 10) / 10, z: Math.round(G.pos.z * 10) / 10 },
     alt: Math.round(G.alt * 10) / 10,
+    // M3 juice
+    shake: Math.round(G.shake * 1000) / 1000, hitstop: Math.round(G.gameHitstop * 1000) / 1000,
+    dmgPops: dmgPops.length, juicePops: G.juicePops, juiceStops: G.juiceStops,
   }),
   newGame,
   continueGame,
@@ -2046,7 +2124,10 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   G.time += dt;
   if (G.mode === 'play') G.runT += dt;
-  if (G.mode === 'play') {
+  // M3 juice: hitstop — freeze the sim for a few frames on impacts
+  const frozen = G.gameHitstop > 0;
+  if (frozen) G.gameHitstop -= dt;
+  if (G.mode === 'play' && !frozen) {
     updatePlayer(dt);
     updateMobs(dt);
     updateBoss(dt);
@@ -2083,6 +2164,8 @@ function frame() {
   if (G.mode === 'play') G.animPhase += dt * (G.dodging > 0 ? 4 : G.moveAmt > 0 ? 10.5 : 1.5);
   updateAnim(dt);
   updateCamera(dt);
+  applyShake(dt); // M3: jitter the camera after the smooth follow
+  updateDamagePops(dt); // M3: float the numbers
   syncPointerLock();
   syncUI(dt);
   renderer.render(scene, camera);

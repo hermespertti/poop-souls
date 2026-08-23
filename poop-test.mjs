@@ -355,6 +355,51 @@ const grdHpAfter = await S(page);
 ok('ground swing hits the mob again', grdHpAfter.mobs[0].hp < grdHpBefore);
 await page.evaluate(() => window.__game.killMobs());
 
+console.log('== M3 juice (damage numbers / shake / hitstop) ==');
+// fresh ground session
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.setHp(999); window.__game.teleport(3, 3); window.__game.setAlt(0); window.__game.setCam(Math.PI / 2, 0.3); window.__game.clearCombat(); window.__game.spawnMob('clog'); });
+await sleepFrames(page, 6);
+// landing a swing: damage number pops + shake + hitstop (cumulative counters = no timing races)
+const base = await S(page);
+await page.evaluate(() => window.__game.attack());
+await sleepFrames(page, 12);
+const jh = await S(page);
+ok('swing hit triggers screen shake', jh.shake > 0 || jh.juiceStops > base.juiceStops);
+ok('swing hit triggers hitstop', jh.juiceStops > base.juiceStops);
+ok('damage number spawned', jh.juicePops > base.juicePops);
+ok('damage number DOM spawned', await page.evaluate(() => document.querySelectorAll('#dmgWrap .dmg').length > 0));
+// floats then clears (0.85s life)
+await sleepFrames(page, 60);
+ok('damage number clears after float', await page.evaluate(() => document.querySelectorAll('#dmgWrap .dmg').length === 0));
+// taking damage: red popup + shake
+await page.evaluate(() => window.__game.damagePlayer(10));
+await sleepFrames(page, 10);
+const jt = await S(page);
+ok('being hit triggers shake', jt.shake > 0 || jt.juiceStops > jh.juiceStops);
+ok('taken damage number spawned', jt.juicePops > jh.juicePops);
+ok('hurt popup is red', await page.evaluate(() => {
+  const els = [...document.querySelectorAll('#dmgWrap .dmg')];
+  return els.some((e) => getComputedStyle(e).color === 'rgb(255, 106, 90)');
+}));
+await sleepFrames(page, 60);
+// boss slam: heavy shake on impact
+await page.evaluate(() => window.__game.startBoss());
+await sleepFrames(page, 160); // 2.4s intro
+const jb = await S(page);
+ok('boss active after intro', jb.boss && jb.boss.intro === 0);
+await page.evaluate(() => window.__game.setHp(999));
+await page.evaluate(() => window.__game.bossAttack('SeatSlam'));
+let maxShake = 0;
+for (let i = 0; i < 45; i++) { // impact lands at the 1.0s telegraph
+  await sleepFrames(page, 2);
+  const s = await S(page);
+  if (s.shake > maxShake) maxShake = s.shake;
+}
+ok('boss slam shakes the camera', maxShake > 0.05);
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => window.__game.killMobs());
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));
