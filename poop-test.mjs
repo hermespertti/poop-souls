@@ -583,6 +583,80 @@ const sc3 = await killForNextZone(page);
 ok('victory fires sting SFX', (sc3.sfx.victory ?? 0) > (sc2.sfx.victory ?? 0));
 ok('victory sets win mode', sc3.mode === 'win');
 
+console.log('== M9 dread (low-HP heartbeat + swing pitch drift) ==');
+// M8 ended in win mode — clean run at zone 0
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.setAlt(0); });
+await sleepFrames(page, 6);
+// --- swing pitch drift: a 3-hit combo must pitch down the chain -----------
+// Kill mobs (a whiff still advances the combo via doPlayerHit, and no mob can
+// hitstun us mid-chain), teleport (refills stamina + clears aim), then swing
+// three times.
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(0, 0); window.__game.setHp(999); window.__game.clearCombat(); });
+// wait for the current swing (if any) to finish
+const waitSwingDone = async (page) => {
+  for (let i = 0; i < 90; i++) {
+    if ((await S(page)).atk === null) return;
+    await sleepFrames(page, 2);
+  }
+};
+for (let i = 0; i < 3; i++) {
+  // teleport clears hitstun/atk/dodge + refills stamina WITHOUT touching
+  // lastHitT/lastCombo, so the combo chain survives a stray mob swat
+  await page.evaluate(() => window.__game.teleport(0, 0));
+  await waitSwingDone(page);
+  await page.evaluate(() => window.__game.attack());
+  await waitSwingDone(page);
+}
+const pAll = (await S(page)).swingPitches;
+const p3 = pAll.slice(-3);
+// The 3-hit combo's pitches are deterministic: 1-(combo-1)*0.045 → 1.0, 0.955, 0.91.
+// Asserting the exact triple proves the chain ran 1→2→3 (a broken chain would
+// show e.g. [1.0, 1.0, 0.955]) and that pitch drifts down the combo. This is
+// robust to the 24-cap ring because it reads the tail, not the length.
+ok('swing pitch drifts down the combo (1.0 → 0.955 → 0.91)',
+  pAll.length >= 3 &&
+  Math.abs(p3[0] - 1.0) < 1e-6 &&
+  Math.abs(p3[1] - 0.955) < 1e-6 &&
+  Math.abs(p3[2] - 0.91) < 1e-6);
+// --- heartbeat: fires at low HP -------------------------------------------
+const sfxHb0 = (await S(page)).sfx;
+await page.evaluate(() => window.__game.setHp(1)); // 1/70 -> deep dread
+let hb1 = 0;
+for (let i = 0; i < 80 && hb1 === 0; i++) { // up to ~1.3s
+  await sleepFrames(page, 8);
+  hb1 = (await S(page)).sfx.heartbeat ?? 0;
+}
+ok('heartbeat fires at low HP', hb1 > (sfxHb0.heartbeat ?? 0));
+// --- heartbeat accelerates as HP drops -------------------------------------
+await sleep(350); // settle past any in-flight beat
+const hbMid = (await S(page)).sfx.heartbeat ?? 0;
+await sleep(2500); // count beats over 2.5s at dread-max (interval ~0.47s)
+const hbFast = (await S(page)).sfx.heartbeat ?? 0;
+ok('fast heartbeat at 1 HP (>=4 beats / 2.5s)', hbFast - hbMid >= 4);
+await page.evaluate(() => window.__game.setHp(24)); // 24/70 -> just under the 35% threshold
+await sleep(450);
+const hbSlow0 = (await S(page)).sfx.heartbeat ?? 0;
+await sleep(2500); // interval ~0.89s -> ~3 beats max
+const hbSlow1 = (await S(page)).sfx.heartbeat ?? 0;
+ok('slower heartbeat near threshold (<4 beats / 2.5s)', hbSlow1 - hbSlow0 < 4);
+// --- no heartbeat above threshold ------------------------------------------
+await page.evaluate(() => { window.__game.setHp(999); });
+await sleep(500);
+const hbFull0 = (await S(page)).sfx.heartbeat ?? 0;
+await sleep(1500);
+const hbFull1 = (await S(page)).sfx.heartbeat ?? 0;
+ok('no heartbeat at full HP', hbFull1 === hbFull0);
+// --- red veil tracks dread ---------------------------------------------------
+await page.evaluate(() => window.__game.setHp(1));
+await sleep(300); // first beat is immediate -> pulse at max
+const veilLow = await page.evaluate(() => parseFloat(getComputedStyle(document.getElementById('dreadVeil')).opacity));
+ok('red veil is visible at low HP', veilLow > 0.2);
+await page.evaluate(() => window.__game.setHp(999));
+await sleep(200);
+const veilFull = await page.evaluate(() => parseFloat(getComputedStyle(document.getElementById('dreadVeil')).opacity));
+ok('red veil clears at full HP', veilFull < 0.01);
+await page.evaluate(() => window.__game.setHp(999));
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

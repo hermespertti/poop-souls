@@ -10,6 +10,9 @@ function count(name: string): void {
   counters[name] = (counters[name] ?? 0) + 1;
 }
 
+// M9: recent swing pitch multipliers — tests verify the combo pitch drift
+const swingPitches: number[] = [];
+
 function ensureCtx(): AudioContext | null {
   if (!ctx) {
     const AC: typeof AudioContext | undefined =
@@ -84,14 +87,19 @@ export const SFX = {
     ensureCtx();
   },
 
-  swing(heavy: boolean): void {
+  // M9: per-swing pitch wobble — consecutive combos drift so a combo chain
+  // doesn't sound like a metronome. `pitchMul` ~0.94..1.0.
+  swing(heavy: boolean, pitchMul = 1): void {
     count("swing");
+    swingPitches.push(pitchMul);
+    if (swingPitches.length > 24) swingPitches.shift();
+    const p = pitchMul;
     if (heavy) {
       noise(0.22, 0.3, 900);
-      osc("sawtooth", 300, 80, 0.2, 0.15);
+      osc("sawtooth", 300 * p, 80 * p, 0.2, 0.15);
     } else {
       noise(0.12, 0.25, 2500);
-      osc("triangle", 500, 180, 0.12, 0.08);
+      osc("triangle", 500 * p, 180 * p, 0.12, 0.08);
     }
   },
 
@@ -247,8 +255,23 @@ export const SFX = {
     noise(0.9, 0.1, 3000, t); // sparkle tail
   },
 
+  // M9: low-HP dread — a single lub-dub thump. The game loop calls this at a
+  // rate that scales with how close to death you are (0.9s at 35% hp down to
+  // 0.45s below 10%). Sub-bass so it sits under the music, not over it.
+  heartbeat(): void {
+    count("heartbeat");
+    osc("sine", 58, 38, 0.16, 0.5); // lub
+    osc("sine", 50, 32, 0.14, 0.42, 0.17); // dub
+    noise(0.1, 0.08, 160);
+  },
+
   // Verification tap — cumulative SFX fire counts, keyed by sound name.
   counters(): Record<string, number> {
     return { ...counters };
+  },
+
+  // M9: recent swing pitch multipliers (oldest first) — proves combo drift.
+  swingPitches(): number[] {
+    return [...swingPitches];
   },
 };

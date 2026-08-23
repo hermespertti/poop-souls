@@ -50,5 +50,7 @@ check-glb.py
 diag-boss.mjs
 diag-boss-*.png
 verify-boss.mjs
+verify-boss-all.mjs
 fix-boss-*.png
+fix-boss-eyeball.mjs
 cap-prod-m8.mjs

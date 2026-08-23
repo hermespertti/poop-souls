@@ -32,6 +32,8 @@
   #hint { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 5; font-size: 11px; color: var(--dim); background: #0009; padding: 4px 12px; white-space: nowrap; }
   #toast { position: fixed; top: 18%; left: 50%; transform: translateX(-50%); z-index: 8; font-size: 22px; letter-spacing: 4px; color: #fff; text-shadow: 0 0 12px #000, 0 1px 3px #000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
   #vignette { position: fixed; inset: 0; z-index: 4; pointer-events: none; background: radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.55) 100%); }
+  /* M9 low-HP dread: red veil that thickens and pulses with the heartbeat */
+  #dreadVeil { position: fixed; inset: 0; z-index: 6; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 34%, rgba(96,8,14,0.95) 100%); }
   /* M3 juice: floating damage numbers */
   #dmgWrap { position: fixed; inset: 0; z-index: 7; pointer-events: none; overflow: hidden; }
   .dmg { position: absolute; left: 0; top: 0; font-weight: bold; text-shadow: 0 1px 2px #000, 0 0 6px #000; white-space: nowrap; will-change: transform, opacity; }
@@ -71,6 +73,7 @@
 <div id="interact"></div>
 <div id="hint">click to look · WASD move (camera-relative) · F lock on · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · R drink flask · E interact / ladders</div>
 <div id="toast"></div>
+<div id="dreadVeil"></div>
 <div id="dmgWrap"></div>
 
 <div class="panel" id="panelTitle">

@@ -69,6 +69,8 @@ const G = {
   shake: 0, gameHitstop: 0, juicePops: 0, juiceStops: 0,
   // M6 polish: white impact flash, camera punch-in, slow-mo (parry / boss kill)
   whiteFlash: 0, camKick: 0, slowmo: 0, flashExposure: 0,
+  // M9 low-HP dread: heartbeat accumulator (seconds until next beat)
+  hbT: 0, heartPulse: 0,
   // M5 verticality: altitude above the ground (0 = ground, walkH = gallery)
   alt: 0, vy: 0, climb: null as { target: number; x: number; z: number } | null,
   weaponIdx: 0,
@@ -114,6 +116,7 @@ const elBossBar = $('bossBar').firstElementChild as HTMLElement;
 const elBossSub = $('bossSub');
 const elInteract = $('interact');
 const elHint = $('hint');
+const elVeil = $('dreadVeil'); // M9: low-HP red tension veil
 const elToast = $('toast');
 const elHud = $('hud');
 const elHudRight = $('hudRight');
@@ -833,7 +836,9 @@ function startAttack() {
       G.yaw = Math.atan2(Math.sin(G.camYaw), Math.cos(G.camYaw));
     }
   }
-  SFX.swing(combo === 3);
+  // M9: pitch drift down the combo chain so a 3-hit string doesn't repeat
+  // one exact frequency — read as a "winding up" of effort, not a metronome.
+  SFX.swing(combo === 3, 1 - (combo - 1) * 0.045);
 }
 
 function doPlayerHit() {
@@ -1961,6 +1966,7 @@ window.__game = {
     flask: { charges: G.save.flaskCharges, max: G.save.flaskMax, drinking: Math.round(G.flaskDrinking * 100) / 100 },
     gritDrops: G.gritDrops.length,
     iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
+    atk: G.atk ? G.atk.combo : null, // M9 test hook: current swing combo step
     locked: G.locked ? G.locked.def.id : null,
     model: modelLoaded ? { loaded: true, anim: currentAnim, actions: Object.keys(actions).sort() } : { loaded: false, anim: 'procedural' },
     stats: { ...G.save.stats },
@@ -1973,6 +1979,10 @@ window.__game = {
     whiteFlash: Math.round(G.whiteFlash * 1000) / 1000, camKick: Math.round(G.camKick * 1000) / 1000, slowmo: Math.round(G.slowmo * 1000) / 1000,
     // M7 audio impact
     sfx: SFX.counters(),
+    // M9 low-HP dread + swing pitch drift
+    dread: Math.max(0, Math.min(1, (0.35 - G.hp / hpMax()) / 0.35)),
+    heartPulse: Math.round(G.heartPulse * 1000) / 1000,
+    swingPitches: SFX.swingPitches(),
   }),
   newGame,
   continueGame,
@@ -2221,6 +2231,24 @@ function frame() {
     keyLight.position.set(G.pos.x + 6, 14, G.pos.z + 5);
     keyLight.target.position.copy(G.pos);
     renderer.toneMappingExposure += ((exposureTarget + G.flashExposure * 0.7) - renderer.toneMappingExposure) * (1 - Math.exp(-3.5 * dt));
+    // M9 low-HP dread: heartbeat accelerates as the bar empties (0.9s at the
+    // 35% threshold down to 0.45s under 10%), the red veil thickens with the
+    // same factor, and a pulse spikes on every beat. Only while alive in play.
+    {
+      const hpF = G.hp / hpMax();
+      const dread = Math.max(0, Math.min(1, (0.35 - hpF) / 0.35)); // 0 above 35%, 1 at 0
+      G.heartPulse = Math.max(0, G.heartPulse - dt * 2.6);
+      if (G.mode === 'play' && dread > 0) {
+        G.hbT -= dt;
+        if (G.hbT <= 0) {
+          SFX.heartbeat();
+          G.heartPulse = 1;
+          G.hbT = 0.9 - 0.45 * dread;
+        }
+      } else G.hbT = 0;
+      const veil = elVeil;
+      veil.style.opacity = String((dread * (0.5 + 0.5 * G.heartPulse) * 0.62).toFixed(3));
+    }
   }
   updateParticles(sdt);
   updateDrops(sdt);
