@@ -318,6 +318,43 @@ ok('cinematic off restores HUD', await page.$eval('#hud', (e) => e.style.display
 console.log('== save persistence ==');
 ok('localStorage save exists', await page.evaluate(() => !!localStorage.getItem('poop-souls-save-v1')));
 
+console.log('== M5 verticality (gallery / ladders / drop holes) ==');
+// fresh play session on zone 0; ladder #0 is at angle PI/4, radius ~22.4 => (15.8, 15.8)
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); });
+await sleepFrames(page, 5);
+// stand near ladder base (ground): interact hint + E starts the climb
+await page.evaluate(() => window.__game.teleport(14.8, 14.8));
+await sleepFrames(page, 5);
+ok('ladder interact hint shows', await page.evaluate(() => document.getElementById('interact').textContent.includes('LADDER')));
+await page.evaluate(() => window.__game.interact());
+await sleepFrames(page, 110); // ~1.8s of climbing at 2.6u/s
+st = await S(page);
+ok('E climbed to the gallery (alt=4.5)', st.alt === 4.5);
+ok('climb parked at ladder top', Math.hypot(st.pos.x - 15.8, st.pos.z - 15.8) < 0.8);
+// walk off a drop hole (angle 0 => +x): falls back to ground
+await page.evaluate(() => window.__game.setAlt(4.5));
+await page.evaluate(() => window.__game.teleport(21.5, 1.2));
+await sleepFrames(page, 90); // over the hole the slab is cut -> falls (0.8s)
+st = await S(page);
+ok('drop hole: gallery walk-off falls to ground', st.alt === 0);
+// layer-gated combat: a swing on the gallery misses ground mobs
+// (player stands on the solid slab at the ladder-top position, alt=4.5)
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(15.8, 15.8); window.__game.setAlt(4.5); window.__game.setCam(0, 0.3); window.__game.clearCombat(); window.__game.spawnMob('clog'); });
+await sleepFrames(page, 10);
+const galHpBefore = await page.evaluate(() => window.__game.state().mobs[0].hp);
+await page.evaluate(() => window.__game.attack());
+await sleepFrames(page, 30);
+const gal = await S(page);
+ok('gallery swing can\'t hit a ground mob', gal.mobs[0].hp === galHpBefore && gal.alt === 4.5);
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(3, 3); window.__game.setAlt(0); window.__game.setCam(Math.PI / 2, 0.3); window.__game.clearCombat(); window.__game.spawnMob('clog'); });
+await sleepFrames(page, 6);
+const grdHpBefore = await page.evaluate(() => window.__game.state().mobs[0].hp);
+await page.evaluate(() => window.__game.attack());
+await sleepFrames(page, 30);
+const grdHpAfter = await S(page);
+ok('ground swing hits the mob again', grdHpAfter.mobs[0].hp < grdHpBefore);
+await page.evaluate(() => window.__game.killMobs());
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

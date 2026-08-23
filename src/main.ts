@@ -64,6 +64,8 @@ const G = {
   blockHeld: false, blockStart: -9,
   dodging: 0, dodgeCd: 0, dodgeDir: new THREE.Vector3(0, 0, 1),
   iframes: 0, hitstun: 0, hurtFlash: 0, blockChipT: 0,
+  // M5 verticality: altitude above the ground (0 = ground, walkH = gallery)
+  alt: 0, vy: 0, climb: null as { target: number; x: number; z: number } | null,
   weaponIdx: 0,
   // world
   mobs: [] as Mob[],
@@ -365,6 +367,7 @@ function loadZone(i: number) {
     spawnMob(def, pos);
   }
   G.pos = zb.spawn.clone();
+  G.alt = 0; G.vy = 0; G.climb = null;
   const toCenter = new THREE.Vector3(0, 0, 0).sub(G.pos);
   G.yaw = Math.atan2(toCenter.x, toCenter.z);
   G.camYaw = G.camYawT = G.yaw; G.camPitch = G.camPitchT = 0.42; G.camDist = G.camDistT = 7;
@@ -709,6 +712,7 @@ const dampAngle = (cur: number, target: number, rate: number) => {
 
 // nearest lock candidate: mobs + active boss, prefers the camera-forward cone
 function pickLockTarget(): Mob | Boss | null {
+  if (G.alt > 1.1) return null; // on the gallery — lock stays on the ground layer
   const camFwd = new THREE.Vector3(Math.sin(G.camYaw), 0, Math.cos(G.camYaw));
   const cands: (Mob | Boss)[] = [];
   for (const m of G.mobs) if (!m.dead) cands.push(m);
@@ -771,6 +775,7 @@ function startAttack() {
 }
 
 function doPlayerHit() {
+  if (G.alt > 1.1) return; // swung on the gallery — ground targets are out of reach
   const w = WEAPONS[G.weaponIdx];
   const tier = G.save.weaponTiers[G.weaponIdx];
   const base = w.damage * (G.atk!.combo === 3 ? w.heavyMult : 1) * tierBonus(tier) * dmgFor(G.save.stats.s);
@@ -822,6 +827,7 @@ function doPlayerHit() {
 
 function damagePlayer(raw: number, melee: boolean) {
   if (G.iframes > 0 || G.hitstun > 0 || G.mode !== 'play') return;
+  if (melee && G.alt > 1.1) return; // ground melee can't reach a player on the gallery
   let dmg = raw;
   if (G.blockHeld && melee) {
     const sinceBlock = G.time - G.blockStart;
@@ -940,7 +946,18 @@ function updatePlayer(dt: number) {
 
   let moving = false;
   const mv = new THREE.Vector3();
-  if (G.hitstun > 0) {
+  // M5: ladder climb — E starts it (doInteract); the player moves up the ladder
+  // to the gallery, or down to the ground. Movement is suspended while climbing.
+  if (G.climb) {
+    const c = G.climb, spd = c.target > G.alt ? 2.6 : 3.0;
+    G.alt += Math.sign(c.target - G.alt) * Math.min(spd * dt, Math.abs(c.target - G.alt));
+    // slide up the rungs: drift toward the ladder center while ascending
+    G.pos.x += (c.x - G.pos.x) * Math.min(1, 8 * dt);
+    G.pos.z += (c.z - G.pos.z) * Math.min(1, 8 * dt);
+    if (Math.abs(G.alt - c.target) < 0.02) {
+      G.alt = c.target; G.pos.set(c.x, 0, c.z); G.vy = 0; G.climb = null;
+    }
+  } else if (G.hitstun > 0) {
     G.hitstun -= dt;
   } else if (G.dodging > 0) {
     G.dodging -= dt;
@@ -1012,6 +1029,42 @@ function updatePlayer(dt: number) {
         G.pos.z = p.z + (dz / d) * min;
       }
     }
+    // M5: verticality physics — gallery support, gravity, ground parapet push-out
+    const v = zb.vertical;
+    const rad = Math.hypot(G.pos.x, G.pos.z);
+    const ang = Math.atan2(G.pos.z, G.pos.x);
+    const angOpen = (c: number, h: number) => { let d = Math.abs(ang - c); if (d > Math.PI) d = Math.PI * 2 - d; return d < h; };
+    const inHole = v.gapCenters.some((c) => angOpen(c, v.gapHalf));
+    const inCorr = v.corridors.some((c) => angOpen(c.angle, c.half));
+    const overSolid = rad > v.walkIn - 0.3 && rad < v.walkOut + 0.5 && !inHole;
+    const fallWasHigh = G.alt > 1.2;
+    if (overSolid && G.alt >= v.walkH - 0.5) {
+      // wide snap band: a step off the edge or a short hop still settles on the slab
+      G.alt = v.walkH; G.vy = 0;
+      // don't let the player walk through the inner parapet from the gallery
+      if (rad < v.walkIn - 0.05 && rad > 0.01) {
+        const f = (v.walkIn - 0.05) / rad;
+        G.pos.x *= f; G.pos.z *= f;
+      }
+    } else if (G.alt > 0.001 && !G.climb) {
+      G.vy -= 14 * dt;
+      G.alt = Math.max(0, G.alt + G.vy * dt);
+      if (G.alt <= 0 && fallWasHigh) {
+        burst(G.pos.clone().setY(0.4), 0x8a8a8a, 10, 2.5, 0.4, 0.06);
+      }
+    }
+    if (G.alt < 0.05) {
+      // on the ground: the inner parapet stops walking under the gallery rim —
+      // except inside a corridor opening, or near a ladder (walk up to the
+      // rungs, then E to climb)
+      const atLadder = v.ladders.some((l) => Math.hypot(G.pos.x - l.x, G.pos.z - l.z) < 2.3);
+      const limit = atLadder ? v.walkIn + 2.2 : inCorr ? v.walkIn + 0.6 : v.walkIn - 0.55;
+      if (rad > limit) {
+        const inv = 1 / (rad || 1);
+        G.pos.x = (G.pos.x * inv) * limit;
+        G.pos.z = (G.pos.z * inv) * limit;
+      }
+    }
   }
   // attack progression (swing visuals live in updateAnim)
   if (G.atk) {
@@ -1022,8 +1075,8 @@ function updatePlayer(dt: number) {
     }
     if (G.atk.t >= G.atk.dur) G.atk = null;
   }
-  // apply transform
-  player.position.copy(G.pos);
+  // apply transform (M5: G.alt carries the gallery/climb height)
+  player.position.set(G.pos.x, G.alt, G.pos.z);
   player.rotation.y = G.yaw;
   // hurt tint
   bodyMat.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
@@ -1452,6 +1505,10 @@ function nearestInteractable(): { kind: string; d: number } | null {
   if (!zb) return null;
   let best: { kind: string; d: number } | null = null;
   for (const it of zb.interactables) {
+    // M5: layer-aware — ladders only matter near their own end, the door/anchors
+    // live on the ground, so an alt mismatch beyond a rung's reach is ignored
+    const layerOK = it.kind === 'ladder' ? G.alt < 1.4 || G.alt > zb.vertical.walkH - 1.4 : G.alt < 1.4;
+    if (!layerOK) continue;
     const d = G.pos.distanceTo(it.pos);
     if (d < it.radius && (!best || d < best.d)) best = { kind: it.kind, d };
   }
@@ -1472,7 +1529,15 @@ function doInteract() {
     if (fire) burst(fire.pos.clone().setY(1.4), 0xffa030, 16, 3, 0.7, 0.08);
     save();
   } else if (hit.kind === 'shrine') {
-    openShrine();
+  openShrine();
+  } else if (hit.kind === 'ladder') {
+  const zb2 = G.zoneBuild!;
+  const lad = zb2.interactables.find((i) => i.kind === 'ladder' && i.pos.distanceTo(G.pos) < 1.7);
+  if (lad) {
+    G.climb = { target: G.alt < 1 ? zb2.vertical.walkH : 0, x: lad.pos.x, z: lad.pos.z };
+    G.atk = null; G.dodging = 0; G.blockHeld = false;
+    SFX.equip();
+  }
   } else if (hit.kind === 'bossDoor') {
     if (!G.bossActive && !G.boss && !G.save.bossesDefeated[G.zone]) startBoss();
     else if (G.save.bossesDefeated[G.zone]) toast('The door is open. The way ahead is cleared.', 1.6);
@@ -1721,7 +1786,7 @@ function syncUI(dt: number) {
     const hit = nearestInteractable();
     if (hit) {
       elInteract.style.display = 'block';
-      elInteract.textContent = hit.kind === 'bonfire' ? 'E — REST AT BONFIRE' : hit.kind === 'shrine' ? 'E — SHRINE OF THE GREAT FLUSH' : (!G.save.bossesDefeated[G.zone] && !G.bossActive ? 'E — FACE THE BOSS' : '');
+      elInteract.textContent = hit.kind === 'bonfire' ? 'E — REST AT BONFIRE' : hit.kind === 'shrine' ? 'E — SHRINE OF THE GREAT FLUSH' : hit.kind === 'ladder' ? (G.alt < 1 ? 'E — CLIMB THE LADDER' : 'E — CLIMB DOWN') : (!G.save.bossesDefeated[G.zone] && !G.bossActive ? 'E — FACE THE BOSS' : '');
       if (!elInteract.textContent) elInteract.style.display = 'none';
     } else elInteract.style.display = 'none';
   } else elInteract.style.display = 'none';
@@ -1742,7 +1807,7 @@ function updateCamera(dt: number) {
   G.camYaw += (G.camYawT - G.camYaw) * t;
   G.camPitch += (G.camPitchT - G.camPitch) * t;
   G.camDist += (G.camDistT - G.camDist) * t;
-  const eye = G.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
+  const eye = G.pos.clone().add(new THREE.Vector3(0, G.alt + 1.4, 0));
   const off = new THREE.Vector3(
     -Math.sin(G.camYaw) * Math.cos(G.camPitch),
     Math.sin(G.camPitch),
@@ -1751,7 +1816,9 @@ function updateCamera(dt: number) {
   const target = eye.clone().add(off);
   target.y = Math.max(0.4, target.y);
   camera.position.copy(target);
-  camera.lookAt(G.pos.clone().add(new THREE.Vector3(0, 1.3, 0)));
+  // M5: aim at the player's eye, not the ground point (gallery is 4u up)
+  const aimY = G.alt * (0.72 - 0.3 * Math.tanh(G.camPitch));
+  camera.lookAt(G.pos.clone().add(new THREE.Vector3(0, 1.3 + aimY, 0)));
   // aim reticle over the locked target (height from the model's actual scale)
   if (G.locked && G.mode === 'play' && !G.cinematic) {
     const p = G.locked.group.position;
@@ -1790,6 +1857,7 @@ window.__game = {
     model: modelLoaded ? { loaded: true, anim: currentAnim, actions: Object.keys(actions).sort() } : { loaded: false, anim: 'procedural' },
     stats: { ...G.save.stats },
     pos: { x: Math.round(G.pos.x * 10) / 10, z: Math.round(G.pos.z * 10) / 10 },
+    alt: Math.round(G.alt * 10) / 10,
   }),
   newGame,
   continueGame,
@@ -1855,6 +1923,8 @@ window.__game = {
     G.hitstun = 0; G.atk = null; G.dodging = 0; G.blockHeld = false; G.locked = null;
     G.stamina = stMax();
   },
+  setAlt: (n: number) => { G.alt = Math.max(0, Math.min(G.zoneBuild ? G.zoneBuild.vertical.walkH : 99, n)); G.vy = 0; G.climb = null; },
+  interact: () => { if (G.mode === 'play') doInteract(); },
   setBossHp: (n: number) => { if (G.boss) G.boss.hp = Math.max(1, Math.min(G.boss.def.hp, n)); },
   bossGlow: (on: boolean) => {
     if (!G.boss) return false;

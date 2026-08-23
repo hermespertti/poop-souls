@@ -7,7 +7,7 @@ import { ZONES } from './data';
 export interface Interactable {
   pos: THREE.Vector3;
   radius: number;
-  kind: 'bonfire' | 'shrine' | 'bossDoor';
+  kind: 'bonfire' | 'shrine' | 'bossDoor' | 'ladder';
   object: THREE.Object3D;
 }
 
@@ -30,10 +30,51 @@ export interface ZoneBuild {
     door: THREE.PointLight;
     center: THREE.PointLight;
   };
+  // M5: verticality — elevated walkway ring with drop gaps + ladders
+  vertical: {
+    walkH: number;          // walkway surface height
+    walkIn: number;         // inner radius (ground stays inside this)
+    walkOut: number;        // outer radius
+    gapCenters: number[];   // drop holes in the ring, radians
+    gapHalf: number;        // half angular width of a hole
+    corridors: { angle: number; half: number }[]; // ground-level passage openings in the rim
+    ladders: { x: number; z: number }[];
+  };
   ambient: {
     fog: number; fogNear: number; fogFar: number; background: number;
     hemiSky: number; hemiGround: number; hemiIntensity: number; light: number;
   };
+}
+
+// M5 ring geometry — module level so both propLayout and buildZone share it.
+// Angle convention: atan2(z, x). North (boss door, -z) is at -PI/2.
+// Corridors open the parapet (+ cut the slab) at the three N-side anchors;
+// drop holes and ladders sit on the open S/E/W arcs.
+export function ringFor(size: number) {
+  const walkH = 4.5;
+  const walkIn = size - 5.2;
+  const walkOut = size - 0.5;
+  const bandMid = (walkIn + walkOut) / 2;
+  const bandHalf = (walkOut - walkIn) / 2;
+  const corridors = [
+    { angle: -Math.PI / 4, half: 0.16 },     // NE: shrine corner
+    { angle: -Math.PI / 2, half: 0.18 },     // N: boss-door passage (slab cut)
+    { angle: -Math.PI * 0.75, half: 0.16 },  // NW: bonfire / spawn corner
+  ];
+  const holes = [0, Math.PI / 2]; // E and S drop holes
+  const holeHalf = 0.14;
+  const ladders = [Math.PI / 4, Math.PI * 0.75, Math.PI].map((a) => ({
+    x: Math.cos(a) * (walkIn + 1.2), z: Math.sin(a) * (walkIn + 1.2),
+  }));
+  const inCorr = (a: number) => corridors.some((c) => { let d = Math.abs(a - c.angle); if (d > Math.PI) d = Math.PI * 2 - d; return d < c.half; });
+  const inHole = (a: number) => holes.some((c) => { let d = Math.abs(a - c); if (d > Math.PI) d = Math.PI * 2 - d; return d < holeHalf; });
+  const inBand = (x: number, z: number) => {
+    const r = Math.hypot(x, z);
+    if (r < walkIn - 1.5 || r > walkOut + 1.5) return false;
+    const a = Math.atan2(z, x);
+    return !inCorr(a) && !inHole(a); // corridor/hole ground is open
+  };
+  return { walkH, walkIn, walkOut, bandMid, bandHalf, corridors, holes, holeHalf, ladders, inCorr, inHole, inBand };
 }
 
 // Prop types per zone + their collider radius (0 = purely visual).
@@ -49,6 +90,7 @@ export interface PropSpawn { x: number; z: number; r: number; prop: string; rot:
 export function propLayout(zoneIndex: number): PropSpawn[] {
   const zone = ZONES[Math.max(0, Math.min(ZONES.length - 1, zoneIndex))];
   const size = zone.size;
+  const ring = ringFor(size);
   const rand = mulberry32(777 + zoneIndex * 131);
   const out: PropSpawn[] = [];
   const anchors: { x: number; z: number; keep: number }[] = [
@@ -76,6 +118,7 @@ export function propLayout(zoneIndex: number): PropSpawn[] {
       guard++;
       const x = (rand() * 2 - 1) * (size - 2.5);
       const z = (rand() * 2 - 1) * (size - 2.5);
+      if (ring.inBand(x, z)) continue; // M5: keep props off the gallery band
       if (anchors.some(a => Math.hypot(a.x - x, a.z - z) < a.keep)) continue;
       if (out.some(q => Math.hypot(q.x - x, q.z - z) < minGap(q.prop) + minGap(prop))) continue;
       out.push({ x, z, r: PROP_R[prop] ?? 0, prop, rot: rand() * Math.PI * 2, scale: 0.85 + rand() * 0.3 });
@@ -170,6 +213,9 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   mkWall(wallT, size * 2, -size, 0); // west
   mkWall(wallT, size * 2, size, 0); // east
 
+  // ---------------- M5 ring (gallery + drop holes + ladders) ----------------
+  const rg = ringFor(size);
+
   // ---------------- pillar placement ----------------
   const bossAnchor = new THREE.Vector2(0, -size + 8);
   const spawnAnchor = new THREE.Vector2(-size + 6, -size + 6);
@@ -181,6 +227,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     guard++;
     const x = (rand() * 2 - 1) * (size - 3);
     const z = (rand() * 2 - 1) * (size - 3);
+    if (rg.inBand(x, z)) continue; // M5: no pillars under the gallery
     const p = new THREE.Vector2(x, z);
     if (p.distanceTo(new THREE.Vector2(0, 0)) < 5) continue;
     if (p.distanceTo(bossAnchor) < 7) continue;
@@ -326,7 +373,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
   const pR = new THREE.Mesh(new THREE.BoxGeometry(1.2, 4.5, 1.2), frameMat);
   pR.position.set(2.2, 2.25, 0);
   const lintel = new THREE.Mesh(new THREE.BoxGeometry(5.6, 1.0, 1.4), frameMat);
-  lintel.position.set(0, 5, 0);
+  lintel.position.set(0, 5.35, 0); // M5: top 5.85 clears the gallery slab above the door
   const slab = new THREE.Mesh(
     new THREE.BoxGeometry(3.2, 4.0, 0.4),
     new THREE.MeshStandardMaterial({ color: 0x14121a, emissive: zone.accent, emissiveIntensity: 0.55 }),
@@ -376,6 +423,69 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     root.add(plate);
   }
 
+  // ---------------- M5 verticality: elevated gallery + drop holes + ladders ----------------
+  // An elevated walkway ring runs along the arena rim at walkH (4.0u). The player
+  // climbs it via ladders (E), walks the rim, and drops back down through the two
+  // drop holes. The parapet is open at N (boss-door passage — the slab is cut
+  // over it) and at SW/NE (reach the bonfire/spawn and shrine corners), so no
+  // ground anchor is walled off. Only the player uses the vertical layer; mobs
+  // keep their spawn level.
+  const SEG = 192;
+  const walkMat = new THREE.MeshStandardMaterial({ color: lightened(zone.floor, 0.06), roughness: 0.92 });
+  const parapetMat = new THREE.MeshStandardMaterial({ color: zone.wall, emissive: zone.wall, emissiveIntensity: 0.1 });
+  for (let i = 0; i < SEG; i++) {
+    const am = ((i + 0.5) / SEG) * Math.PI * 2;
+    const hole = rg.inHole(am), corr = rg.inCorr(am);
+    // gallery slab (cut over drop holes AND the corridor passages)
+    if (!hole && !corr) {
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(rg.bandHalf * 2, 0.22, 1.1), walkMat);
+      seg.position.set(Math.cos(am) * rg.bandMid, rg.walkH - 0.11, Math.sin(am) * rg.bandMid);
+      seg.rotation.y = -am;
+      seg.receiveShadow = true;
+      root.add(seg);
+    }
+    // inner parapet (open at corridors so the ground floor reaches the nooks)
+    if (!hole && !corr) {
+      const pw = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.1, 1.1), parapetMat);
+      pw.position.set(Math.cos(am) * rg.walkIn, rg.walkH + 0.35, Math.sin(am) * rg.walkIn);
+      pw.rotation.y = -am;
+      pw.castShadow = true;
+      root.add(pw);
+    }
+  }
+  // ground-level passage torches: one per corridor opening — a reason to walk
+  // the rim and see what's in the dark nook under the gallery
+  for (const c of rg.corridors) {
+    const passLight = new THREE.PointLight(zone.accent, 5, 9, 2);
+    passLight.userData.base = 5;
+    passLight.position.set(Math.cos(c.angle) * (size - 2.6), 2.2, Math.sin(c.angle) * (size - 2.6));
+    root.add(passLight);
+  }
+  // ladders: two uprights + rungs, standing on the ground, spanning to the gallery
+  const ladMat = new THREE.MeshStandardMaterial({ color: 0x6a5a42, roughness: 0.85 });
+  const ladderObjs: THREE.Group[] = [];
+  for (const lp of rg.ladders) {
+    const lg = new THREE.Group();
+    const h = rg.walkH + 0.8;
+    for (const s of [-0.35, 0.35]) {
+      const up = new THREE.Mesh(new THREE.BoxGeometry(0.09, h, 0.09), ladMat);
+      up.position.set(s, h / 2, 0);
+      up.castShadow = true;
+      lg.add(up);
+    }
+    for (let r = 0.4; r < h; r += 0.42) {
+      const rung = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.06, 0.06), ladMat);
+      rung.position.set(0, r, 0);
+      lg.add(rung);
+    }
+    // face the ladder's plane tangentially (thin axis radial) so it reads as a wall ladder
+    lg.rotation.y = Math.PI / 2 - Math.atan2(lp.z, lp.x);
+    lg.position.set(lp.x, 0, lp.z);
+    root.add(lg);
+    ladderObjs.push(lg);
+  }
+  const vertical = { walkH: rg.walkH, walkIn: rg.walkIn, walkOut: rg.walkOut, gapCenters: rg.holes, gapHalf: rg.holeHalf, corridors: rg.corridors, ladders: rg.ladders };
+
   // ---------------- ambient ----------------
   const ambient = {
     fog: zone.fog,
@@ -392,6 +502,10 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     { pos: bonfirePos.clone(), radius: 2.2, kind: 'bonfire', object: fireGroup },
     { pos: shrinePos.clone(), radius: 2.4, kind: 'shrine', object: shrineGroup },
     { pos: new THREE.Vector3(0, 0, -size + 3.5), radius: 2.0, kind: 'bossDoor', object: doorGroup },
+    // M5: ladders — E climbs between ground and the gallery
+    ...rg.ladders.map((lp, i) => ({
+      pos: new THREE.Vector3(lp.x, 0, lp.z), radius: 1.6, kind: 'ladder' as const, object: ladderObjs[i],
+    })),
   ];
 
   const propLayoutArr = propLayout(zoneIndex);
@@ -406,6 +520,7 @@ export function buildZone(zoneIndex: number): ZoneBuild {
     pillars,
     propColliders: propLayoutArr.filter((p) => p.r > 0).map((p) => ({ x: p.x, z: p.z, r: p.r * p.scale })),
     dynamic: { fire: fireLight, torches: torchLights, braziers: brazierLights, shrine: shrineLight, door: doorLight, center: centerLight },
+    vertical,
     ambient,
   };
 }
