@@ -45,3 +45,10 @@ prod-*.png
 measure-joints.mjs
 region-probe.mjs
 check-glb.py
+
+# boss skinning diagnostic artifacts
+diag-boss.mjs
+diag-boss-*.png
+verify-boss.mjs
+fix-boss-*.png
+cap-prod-m8.mjs

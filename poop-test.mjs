@@ -215,10 +215,68 @@ st = await S(page);
 ok('empty flask does not drain', st.flask.charges === 0);
 
 console.log('== boss 1 ==');
+// Regression: skinned boss vertices must render at the bones' position.
+// (rebindClone once double-applied the group placement — the body skinned
+// ~19u behind the dais, through the north wall, invisible in the dark.)
+const bossBbox = async (page) => {
+  for (let i = 0; i < 60; i++) {
+    const q = await S(page);
+    if (q.boss && q.boss.glb && q.boss.glb.loaded) break;
+    await sleepFrames(page, 10);
+  }
+  return page.evaluate(() => {
+    const g = window.__game;
+    const st = g.state();
+    if (!st.boss || !st.boss.glb || !st.boss.glb.loaded) return null;
+    const scene = g.playerObj().parent;
+    scene.updateMatrixWorld(true);
+    let bossG = null;
+    for (const c of scene.children) {
+      if (Math.abs(c.position.x - st.boss.x) < 0.6 && Math.abs(c.position.z - st.boss.z) < 0.6) { bossG = c; break; }
+    }
+    if (!bossG) return null;
+    let bMin = [1e9, 1e9, 1e9], bMax = [-1e9, -1e9, -1e9];
+    bossG.traverse((o) => {
+      if (o.isBone) {
+        const e = o.matrixWorld.elements;
+        bMin[0] = Math.min(bMin[0], e[12]); bMin[1] = Math.min(bMin[1], e[13]); bMin[2] = Math.min(bMin[2], e[14]);
+        bMax[0] = Math.max(bMax[0], e[12]); bMax[1] = Math.max(bMax[1], e[13]); bMax[2] = Math.max(bMax[2], e[14]);
+      }
+    });
+    let vMin = [1e9, 1e9, 1e9], vMax = [-1e9, -1e9, -1e9], found = false;
+    bossG.traverse((o) => {
+      if (!o.isSkinnedMesh) return;
+      o.computeBoundingBox();
+      const bb = o.boundingBox;
+      if (!bb) return;
+      const V3 = bb.min.constructor;
+      const c = new V3();
+      for (let i = 0; i < 8; i++) {
+        c.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z);
+        c.applyMatrix4(o.matrixWorld);
+        vMin[0] = Math.min(vMin[0], c.x); vMin[1] = Math.min(vMin[1], c.y); vMin[2] = Math.min(vMin[2], c.z);
+        vMax[0] = Math.max(vMax[0], c.x); vMax[1] = Math.max(vMax[1], c.y); vMax[2] = Math.max(vMax[2], c.z);
+      }
+      found = true;
+    });
+    if (!found) return null;
+    return {
+      group: [bossG.position.x, bossG.position.z],
+      vCenter: [(vMin[0] + vMax[0]) / 2, (vMin[1] + vMax[1]) / 2, (vMin[2] + vMax[2]) / 2],
+      bCenter: [(bMin[0] + bMax[0]) / 2, (bMin[1] + bMax[1]) / 2, (bMin[2] + bMax[2]) / 2],
+      vHeight: vMax[1] - vMin[1],
+    };
+  });
+};
 await page.evaluate(() => window.__game.startBoss());
 await sleepFrames(page, 5);
 st = await S(page);
 ok('boss active: The Porcelain King', st.boss && st.boss.name === 'The Porcelain King' && st.boss.active === true);
+const bb1 = await bossBbox(page);
+ok('boss GLB loaded', bb1 !== null);
+ok('boss body renders at the dais (not behind the wall)', bb1 && Math.hypot(bb1.vCenter[0] - bb1.group[0], bb1.vCenter[2] - bb1.group[1]) < 1.5);
+ok('boss body tracks its bones', bb1 && Math.hypot(bb1.vCenter[0] - bb1.bCenter[0], bb1.vCenter[1] - bb1.bCenter[1], bb1.vCenter[2] - bb1.bCenter[2]) < 2.0);
+ok('boss body not skinned-collapsed', bb1 && bb1.vHeight > 1.0);
 const bossHpBefore = st.boss.hp;
 await page.evaluate(() => window.__game.hitBoss(100));
 await sleepFrames(page, 30);

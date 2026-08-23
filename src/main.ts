@@ -1244,11 +1244,15 @@ function updateAnim(dt: number) {
 
 // ============================== boss ==============================
 // Blender GLB characters — parsed once per id, re-bonded clone per instance.
-// SkinnedMesh.copy shares the SOURCE skeleton object, and the cached original
-// scene is never added to the scene graph — its bones' matrixWorld never
-// updates, so a raw clone would be skinned by stale (identity) transforms and
-// render as a crumpled, near-invisible lump. rebindClone() re-points each
-// skinned mesh's skeleton at the clone's own (in-graph) bones.
+// The cached source scene is never added to the scene graph, so a raw clone's
+// shared skeleton points at STALE source bones (their matrixWorld never
+// updates) and renders as a crumpled lump. rebindClone() re-points each
+// skinned mesh at the clone's own (in-graph) bones AND recomputes the bone
+// inverses from the clone's CURRENT world matrices. The GLB's authored
+// inverses are only valid in the source scene's placement — passing them to
+// a clone bound at a different placement multiplies every vertex by an extra
+// A_source⁻¹·A_clone factor (the bosses used to render ~19u behind the dais,
+// through the north wall: visible only as a thin sliver in the dark).
 const charGlts: Record<string, { scene: THREE.Group; animations: THREE.AnimationClip[] }> = {};
 function loadCharacterGltf(id: string, file: string): Promise<void> {
   return new Promise((resolve) => {
@@ -1260,16 +1264,18 @@ function loadCharacterGltf(id: string, file: string): Promise<void> {
   });
 }
 function rebindClone(root: THREE.Object3D) {
-  // must run AFTER the clone's final position/scale are set — the bind matrix
-  // is captured from the mesh's current world matrix
+  // must run AFTER the clone's final position/scale are set — the inverses
+  // are recomputed from the clone bones' CURRENT world matrices
   scene.updateMatrixWorld(true);
   root.traverse((o) => {
     const sm = o as THREE.SkinnedMesh;
     if (sm.isSkinnedMesh) {
       const src = sm.skeleton;
       const bones = src.bones.map((b) => (root.getObjectByName(b.name) as THREE.Bone) || b);
+      // NO boneInverses arg: Skeleton recomputes them from bones[i].matrixWorld
+      // — the bind pose of the clone as it actually sits in the scene.
       sm.bindMode = 'attached';
-      sm.bind(new THREE.Skeleton(bones, src.boneInverses), new THREE.Matrix4().copy(sm.matrixWorld));
+      sm.bind(new THREE.Skeleton(bones), sm.matrixWorld.clone());
     }
   });
 }
