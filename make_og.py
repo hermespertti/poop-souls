@@ -3,8 +3,8 @@ import os
 
 W, H = 1200, 630
 src = Image.open('og-raw.png').convert('RGB')
-src = ImageEnhance.Brightness(src).enhance(1.16)
-src = ImageEnhance.Contrast(src).enhance(1.10)
+src = ImageEnhance.Brightness(src).enhance(1.32)
+src = ImageEnhance.Contrast(src).enhance(1.12)
 target_ar = W / H
 sw, sh = src.size
 if sw / sh > target_ar:
@@ -42,7 +42,7 @@ def text_soft_shadow(base, pos, text, fnt, fill, blur=3, off=4):
 
 text_soft_shadow(canvas, (42, H - 160), 'POOP SOULS', font(102, True), (246, 244, 236), blur=4, off=5)
 text_soft_shadow(canvas, (46, H - 68), 'A DARK BOWELS LEGEND', font(31, True), (226, 172, 82), blur=2, off=3)
-text_soft_shadow(canvas, (46, H - 33), 'THREE ZONES  ·  THREE BOSSES  ·  DEATH IS REAL', font(22, False), (172, 177, 190), blur=2, off=2)
+text_soft_shadow(canvas, (46, H - 33), 'THREE ZONES  ·  THREE BOSSES  ·  DEATH IS REAL', font(22, False), (205, 210, 222), blur=2, off=2)
 
 ptext = 'hermespertti.github.io'
 ptw = ImageDraw.Draw(canvas).textlength(ptext, font=font(20, True))
