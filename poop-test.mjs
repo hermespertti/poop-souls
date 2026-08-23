@@ -499,6 +499,32 @@ await page.evaluate(() => window.__game.killBoss());
 await sleepFrames(page, 30);
 await page.evaluate(() => window.__game.killMobs());
 
+console.log('== M8 stings (zone clear / victory) ==');
+// M7 left us in zone 2 / win mode — reset to a clean run at zone 0
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.setAlt(0); });
+await sleepFrames(page, 6);
+// counters are module-global; diff against current values
+const sfxS0 = (await S(page)).sfx;
+const killForNextZone = async (page) => {
+  await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+  await sleepFrames(page, 4);
+  await page.evaluate(() => window.__game.killBoss());
+  await sleepFrames(page, 8);
+  return S(page);
+};
+// zone 0 -> 1
+const sc1 = await killForNextZone(page);
+ok('zone clear fires sting SFX', (sc1.sfx.zoneClear ?? 0) > (sfxS0.zoneClear ?? 0));
+ok('zone clear advances zone to 1', sc1.zone === 1);
+// zone 1 -> 2
+const sc2 = await killForNextZone(page);
+ok('second zone clear fires sting again', (sc2.sfx.zoneClear ?? 0) > (sc1.sfx.zoneClear ?? 0));
+ok('second zone clear advances zone to 2', sc2.zone === 2);
+// zone 2 -> win
+const sc3 = await killForNextZone(page);
+ok('victory fires sting SFX', (sc3.sfx.victory ?? 0) > (sc2.sfx.victory ?? 0));
+ok('victory sets win mode', sc3.mode === 'win');
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

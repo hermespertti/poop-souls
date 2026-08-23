@@ -216,6 +216,37 @@ export const SFX = {
     osc("sine", 5200, 4800, 0.12, 0.1);
   },
 
+  // ---- M8 stings: the two narrative beats that had no musical payoff ------
+  // Zone cleared — a grounded thud under a slow rising major arpeggio.
+  // Lower register + slower spacing than levelUp, so it reads as "the door
+  // opened" rather than "you grew".
+  zoneClear(): void {
+    count("zoneClear");
+    osc("sine", 110, 40, 0.4, 0.4); // thud
+    osc("sawtooth", 262, 262, 0.5, 0.1, 0.05); // C4
+    osc("sawtooth", 330, 330, 0.5, 0.1, 0.18); // E4
+    osc("sawtooth", 392, 392, 0.6, 0.1, 0.31); // G4
+    osc("triangle", 523, 523, 0.9, 0.16, 0.44); // C5 — hold the top
+    noise(0.5, 0.08, 2400, 0.44);
+  },
+
+  // Victory — the Throne is clean. A two-stage lift: pad chord under a rising
+  // arpeggio, then a full major chord hit with a long decay. ~2s.
+  victory(): void {
+    count("victory");
+    osc("sine", 80, 30, 0.6, 0.5); // sub boom under everything
+    // pad: C major, sustained
+    for (const f of [262, 330, 392, 494]) osc("sawtooth", f, f, 1.3, 0.05, 0.05);
+    // rising arpeggio
+    const arp = [523, 659, 784, 1047];
+    arp.forEach((f, i) => osc("triangle", f, f, 0.5, 0.16, 0.25 + i * 0.11));
+    // final chord hit with long decay
+    const t = 1.0;
+    for (const f of [523, 659, 784, 1047, 1319]) osc("sawtooth", f, f, 1.4, 0.07, t);
+    osc("sine", 1568, 1568, 1.6, 0.06, t);
+    noise(0.9, 0.1, 3000, t); // sparkle tail
+  },
+
   // Verification tap — cumulative SFX fire counts, keyed by sound name.
   counters(): Record<string, number> {
     return { ...counters };

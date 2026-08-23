@@ -1419,10 +1419,12 @@ function bossDefeated() {
   G.boss = null;
   G.bossActive = false;
   if (G.zone < 2) {
+    SFX.zoneClear(); // M8: the door opened — zone-clear sting
     toast('ZONE CLEARED', 2.4);
     loadZone(G.zone + 1);
   } else {
     G.mode = 'win';
+    SFX.victory(); // M8: the Throne is clean — victory sting
     MUS.duck(true); // let the ambience drop under the victory screen
     const m = Math.floor(G.runT / 60), s = Math.floor(G.runT % 60);
     $('winStats').innerHTML = `Level ${levelOf()} · ${G.kills} foes slain · ${G.deaths} deaths<br>${G.soulsEarned} souls earned · ${m}m ${s}s<br>The Throne is clean. You may, at last, sit.`;
