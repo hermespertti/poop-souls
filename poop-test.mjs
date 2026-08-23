@@ -400,6 +400,37 @@ await page.evaluate(() => window.__game.killBoss());
 await sleepFrames(page, 30);
 await page.evaluate(() => window.__game.killMobs());
 
+console.log('== M6 polish (white flash / camera punch / slow-mo) ==');
+// fresh session
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.teleport(3, 3); window.__game.setAlt(0); window.__game.clearCombat(); window.__game.setHp(999); });
+await sleepFrames(page, 6);
+// taking a hit: white impact spike + camera punch-in
+await page.evaluate(() => window.__game.damagePlayer(10));
+await sleepFrames(page, 2);
+const pm = await S(page);
+ok('hit triggers white flash', pm.whiteFlash > 0);
+ok('hit punches the camera in', pm.camKick > 0);
+// parry: slow-mo + white flash
+await sleepFrames(page, 20);
+await page.evaluate(() => window.__game.parryHit(10));
+await sleepFrames(page, 3);
+const pp = await S(page);
+ok('parry triggers slow-mo', pp.slowmo > 0);
+ok('parry flashes white', pp.whiteFlash > 0);
+// slow-mo decays back to zero
+await sleepFrames(page, 80);
+ok('slow-mo decays to zero', (await S(page)).slowmo === 0);
+// boss kill moment: slow-mo + flash spike
+await page.evaluate(() => window.__game.startBoss());
+await sleepFrames(page, 160);
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 4);
+const pk = await S(page);
+ok('boss kill triggers slow-mo', pk.slowmo > 0);
+ok('boss kill flashes white', pk.whiteFlash > 0);
+await sleepFrames(page, 120);
+ok('post-kill slow-mo fully decays', (await S(page)).slowmo === 0);
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

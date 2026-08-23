@@ -66,6 +66,8 @@ const G = {
   iframes: 0, hitstun: 0, hurtFlash: 0, blockChipT: 0,
   // M3 juice
   shake: 0, gameHitstop: 0, juicePops: 0, juiceStops: 0,
+  // M6 polish: white impact flash, camera punch-in, slow-mo (parry / boss kill)
+  whiteFlash: 0, camKick: 0, slowmo: 0, flashExposure: 0,
   // M5 verticality: altitude above the ground (0 = ground, walkH = gallery)
   alt: 0, vy: 0, climb: null as { target: number; x: number; z: number } | null,
   weaponIdx: 0,
@@ -900,6 +902,10 @@ function damagePlayer(raw: number, melee: boolean) {
       G.stamina = Math.max(0, G.stamina - 10);
       toast('PARRY', 0.8);
       burst(G.pos.clone().setY(1.2), 0xffffff, 12, 4, 0.4, 0.06);
+      // M6 polish: the parry moment — armor flashes white, world slows
+      G.whiteFlash = 0.25;
+      G.slowmo = 0.4;
+      G.gameHitstop = Math.max(G.gameHitstop, 0.05);
       // stagger nearest
       for (const m of G.mobs) {
         if (!m.dead && G.pos.distanceTo(m.group.position) < 3.5) { m.hitstun = 0.9; }
@@ -920,6 +926,8 @@ function damagePlayer(raw: number, melee: boolean) {
     SFX.hitPlayer();
   }
   G.hurtFlash = 0.4;
+  G.whiteFlash = 0.3; // M6: white impact spike on top of the red tint
+  G.camKick = 1.1; // M6: camera punches in on the hit
   // M3 juice: hurt shake + red floating number
   shakeCamera(0.16);
   G.gameHitstop = Math.max(G.gameHitstop, 0.07);
@@ -1147,12 +1155,13 @@ function updatePlayer(dt: number) {
   // apply transform (M5: G.alt carries the gallery/climb height)
   player.position.set(G.pos.x, G.alt, G.pos.z);
   player.rotation.y = G.yaw;
-  // hurt tint
-  bodyMat.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
-  bodyMat.emissiveIntensity = G.hurtFlash * 2;
+  // hurt tint + M6 white impact spike (white wins for the first 0.12s, red after)
+  const whiteOn = G.whiteFlash > 0;
+  bodyMat.emissive.setHex(whiteOn ? 0xffffff : G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
+  bodyMat.emissiveIntensity = whiteOn ? G.whiteFlash * 3 : G.hurtFlash * 2;
   if (modelLoaded) for (const m of tintMats) {
-    m.emissive.setHex(G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
-    m.emissiveIntensity = G.hurtFlash * 1.5;
+    m.emissive.setHex(whiteOn ? 0xffffff : G.hurtFlash > 0 ? 0xaa2222 : 0x000000);
+    m.emissiveIntensity = whiteOn ? G.whiteFlash * 2.5 : G.hurtFlash * 1.5;
   }
 }
 
@@ -1392,6 +1401,11 @@ function bossDefeated() {
   SFX.bossDefeat();
   burst(b.group.position.clone().setY(1.5), b.def.color, 40, 6, 1.2, 0.14);
   burst(b.group.position.clone().setY(1.5), 0xffffff, 24, 5, 0.9, 0.1);
+  // M6 polish: the kill lands — slow-mo, white flash, exposure spike
+  G.slowmo = 0.9;
+  G.whiteFlash = 0.5;
+  G.flashExposure = 0.8;
+  shakeCamera(0.3);
   scene.remove(b.group);
   G.save.souls += b.def.souls;
   G.soulsEarned += b.def.souls;
@@ -1888,6 +1902,8 @@ function updateCamera(dt: number) {
     Math.sin(G.camPitch),
     -Math.cos(G.camYaw) * Math.cos(G.camPitch),
   ).multiplyScalar(G.camDist);
+  // M6: punch the camera in on the hit frame (decays in the loop)
+  if (G.camKick > 0.01) off.multiplyScalar(1 - 0.14 * Math.min(1, G.camKick));
   const target = eye.clone().add(off);
   target.y = Math.max(0.4, target.y);
   camera.position.copy(target);
@@ -1936,6 +1952,8 @@ window.__game = {
     // M3 juice
     shake: Math.round(G.shake * 1000) / 1000, hitstop: Math.round(G.gameHitstop * 1000) / 1000,
     dmgPops: dmgPops.length, juicePops: G.juicePops, juiceStops: G.juiceStops,
+    // M6 polish
+    whiteFlash: Math.round(G.whiteFlash * 1000) / 1000, camKick: Math.round(G.camKick * 1000) / 1000, slowmo: Math.round(G.slowmo * 1000) / 1000,
   }),
   newGame,
   continueGame,
@@ -2124,15 +2142,21 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   G.time += dt;
   if (G.mode === 'play') G.runT += dt;
+  // M6 polish: slow-mo + real-time decay of the flash/kick timers
+  if (G.slowmo > 0) G.slowmo = Math.max(0, G.slowmo - dt);
+  const sdt = G.slowmo > 0 ? dt * 0.35 : dt;
+  G.whiteFlash = Math.max(0, G.whiteFlash - dt);
+  G.camKick *= Math.exp(-8 * dt);
+  G.flashExposure = Math.max(0, G.flashExposure - dt * 1.6);
   // M3 juice: hitstop — freeze the sim for a few frames on impacts
   const frozen = G.gameHitstop > 0;
   if (frozen) G.gameHitstop -= dt;
   if (G.mode === 'play' && !frozen) {
-    updatePlayer(dt);
-    updateMobs(dt);
-    updateBoss(dt);
-    updateProjectiles(dt);
-    updateHazards(dt);
+    updatePlayer(sdt);
+    updateMobs(sdt);
+    updateBoss(sdt);
+    updateProjectiles(sdt);
+    updateHazards(sdt);
     // shrine bowl pulse
     const zb = G.zoneBuild;
     if (zb) {
@@ -2157,12 +2181,12 @@ function frame() {
     }
     keyLight.position.set(G.pos.x + 6, 14, G.pos.z + 5);
     keyLight.target.position.copy(G.pos);
-    renderer.toneMappingExposure += (exposureTarget - renderer.toneMappingExposure) * (1 - Math.exp(-2.5 * dt));
+    renderer.toneMappingExposure += ((exposureTarget + G.flashExposure * 0.7) - renderer.toneMappingExposure) * (1 - Math.exp(-3.5 * dt));
   }
-  updateParticles(dt);
-  updateDrops(dt);
-  if (G.mode === 'play') G.animPhase += dt * (G.dodging > 0 ? 4 : G.moveAmt > 0 ? 10.5 : 1.5);
-  updateAnim(dt);
+  updateParticles(sdt);
+  updateDrops(sdt);
+  if (G.mode === 'play') G.animPhase += sdt * (G.dodging > 0 ? 4 : G.moveAmt > 0 ? 10.5 : 1.5);
+  updateAnim(sdt);
   updateCamera(dt);
   applyShake(dt); // M3: jitter the camera after the smooth follow
   updateDamagePops(dt); // M3: float the numbers

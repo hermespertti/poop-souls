@@ -24,9 +24,13 @@ cap-*.png
 cap-*.mjs
 m5-*.png
 m3-*.png
+m6-*.png
 light-*.png
 zone*-wide*.png
 throne-closeup.png
+og-*.png
+og-candidates*.mjs
+og-final*.mjs
 verify-bosses.mjs
 boss-king-*.png
 boss-lord-*.png
