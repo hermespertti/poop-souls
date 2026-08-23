@@ -29,7 +29,7 @@ interface Mob {
 interface Boss {
   def: BossDef; group: THREE.Group; mat: THREE.MeshStandardMaterial; hp: number;
   state: 'idle' | 'windup'; cds: Record<string, number>; current: string; telegraph: number;
-  hitstop: number; idle: number; charge: { dir: THREE.Vector3; t: number; dmg: number } | null;
+  hitstop: number; idle: number; hold: boolean; charge: { dir: THREE.Vector3; t: number; dmg: number } | null;
   lunge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
   baseY: number; phase: number;
   // Blender GLB (optional — null mixer = procedural fallback)
@@ -63,6 +63,7 @@ const G = {
   lastHitT: -9,
   blockHeld: false, blockStart: -9,
   dodging: 0, dodgeCd: 0, dodgeDir: new THREE.Vector3(0, 0, 1),
+  god: false, // M7 test hook: damage lands (SFX/juice) but never subtracts HP
   iframes: 0, hitstun: 0, hurtFlash: 0, blockChipT: 0,
   // M3 juice
   shake: 0, gameHitstop: 0, juicePops: 0, juiceStops: 0,
@@ -899,6 +900,7 @@ function damagePlayer(raw: number, melee: boolean) {
     const sinceBlock = G.time - G.blockStart;
     if (sinceBlock < PARRY_WINDOW) {
       SFX.parry();
+      SFX.clink(); // M7: metallic ring over the chime
       G.stamina = Math.max(0, G.stamina - 10);
       toast('PARRY', 0.8);
       burst(G.pos.clone().setY(1.2), 0xffffff, 12, 4, 0.4, 0.06);
@@ -933,7 +935,7 @@ function damagePlayer(raw: number, melee: boolean) {
   G.gameHitstop = Math.max(G.gameHitstop, 0.07);
   G.juiceStops++;
   dmgPopup(G.pos.clone().setY(1.7), '-' + Math.round(dmg), 'taken');
-  G.hp -= dmg;
+  G.hp -= G.god ? 0 : dmg; // M7: god mode — damage reads but never kills (tests)
   if (G.hp <= 0) { G.hp = 0; die(); }
 }
 
@@ -1303,7 +1305,7 @@ function startBoss() {
   scene.add(group);
   const newBoss: Boss = {
     def, group, mat, hp: def.hp, state: 'idle',
-    cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55,
+    cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55, hold: false,
     charge: null, lunge: null, targetPos: null, baseY: zb.boss.y, phase: Math.random() * 6.28,
     mats: [mat], mixer: null, actions: {}, curAnim: '', clipUntil: 0,
   };
@@ -1459,7 +1461,7 @@ function updateBoss(dt: number) {
     b.group.position.x = THREE.MathUtils.clamp(b.group.position.x, -size + 1.5, size - 1.5);
     b.group.position.z = THREE.MathUtils.clamp(b.group.position.z, -size + 1.5, size - 1.5);
     if (dist < 1.9 + b.def.scale * 0.4) damagePlayer(b.charge.dmg, true);
-    if (b.charge.t <= 0) b.charge = null;
+    if (b.charge.t <= 0) { b.charge = null; SFX.slam(0.8); } // M7: wall impact thud
     return;
   }
   if (b.lunge) {
@@ -1502,6 +1504,7 @@ function updateBoss(dt: number) {
     }
     return;
   }
+  if (b.hold) return; // M7 test hook: AI frozen — scripted windups/charges still run above
   // idle: walk toward player + pick attacks
   const walkSpd = 2.8;
   const walking = dist > 2.2 && !b.lunge;
@@ -1554,14 +1557,17 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
     b.lunge = { dir, t: 0.18 };
     burst(p.clone().setY(1.4), b.def.color, 10, 4, 0.4, 0.1);
     shakeCamera(0.07);
+    SFX.spinSweep(); // M7: the swipe has air
   } else if (atk === 'SeatSlam' || atk === 'BodySlam' || atk === 'CorePulse') {
     if (dist < range) damagePlayer(dmg, true);
     burst(p.clone().setY(0.5), b.def.color, 20, 6, 0.6, 0.12);
     burst(p.clone().setY(0.3), 0x5a4632, 14, 4, 0.5, 0.1); // M3: dust ring on the impact
     shakeCamera(0.22);
     G.gameHitstop = Math.max(G.gameHitstop, 0.08);
+    SFX.slam(1); // M7: the slam THUMPS — sub-bass under the shake
   } else if (atk === 'Spin') {
     if (dist < range + 0.6) damagePlayer(dmg, true);
+    SFX.spinSweep(); // M7
     for (let i = 0; i < 14; i++) {
       const a = (i / 14) * Math.PI * 2;
       burst(p.clone().add(new THREE.Vector3(Math.cos(a) * 1.4, 1.2, Math.sin(a) * 1.4)), b.def.color, 3, 5, 0.5, 0.08);
@@ -1570,12 +1576,14 @@ function executeBossAttack(b: Boss, dmg: number, range: number) {
     if (b.targetPos && G.pos.distanceTo(b.targetPos) < 2.4) damagePlayer(dmg, false);
     burst((b.targetPos ?? p).clone().setY(0.5), 0x5a4632, 26, 6, 0.8, 0.16);
     shakeCamera(0.14); // M3: meteor thump
+    SFX.meteor(); // M7: the drop LANDS
     b.targetPos = null;
   } else if (atk === 'GasCloud') {
     spawnCloud(p, 3, 4, dmg);
   } else if (atk === 'BloatCharge') {
     const dir = new THREE.Vector3(G.pos.x - p.x, 0, G.pos.z - p.z).normalize();
     b.charge = { dir, t: 1.1, dmg };
+    SFX.chargeWhoosh(); // M7: rising rush as the body commits
   } else if (atk === 'WallOfFilth') {
     const rot = Math.atan2(b.group.position.x - G.pos.x, b.group.position.z - G.pos.z);
     const wallPos = G.pos.clone().add(new THREE.Vector3(0, 0, 0));
@@ -1937,6 +1945,7 @@ window.__game = {
     boss: G.boss ? {
       active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp,
       state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10,
+      tele: Math.round(G.boss.telegraph * 100) / 100,
       x: Math.round(G.boss.group.position.x * 10) / 10, z: Math.round(G.boss.group.position.z * 10) / 10,
       glb: G.boss.mixer ? { loaded: true, anim: G.boss.curAnim } : { loaded: false, anim: 'procedural' },
     } : null,
@@ -1954,6 +1963,8 @@ window.__game = {
     dmgPops: dmgPops.length, juicePops: G.juicePops, juiceStops: G.juiceStops,
     // M6 polish
     whiteFlash: Math.round(G.whiteFlash * 1000) / 1000, camKick: Math.round(G.camKick * 1000) / 1000, slowmo: Math.round(G.slowmo * 1000) / 1000,
+    // M7 audio impact
+    sfx: SFX.counters(),
   }),
   newGame,
   continueGame,
@@ -1961,6 +1972,7 @@ window.__game = {
   weapon: (i: number) => switchWeapon(i),
   attack: () => startAttack(),
   dodge: () => { spaceQueued = true; updatePlayer(0.016); },
+  resetDodgeCd: () => { G.dodgeCd = 0; G.dodging = 0; G.iframes = 0; }, // M7 test hook
   damagePlayer: (n: number, melee = true) => damagePlayer(n, melee),
   parryHit: (n: number) => { G.blockHeld = true; G.blockStart = G.time; damagePlayer(n, true); G.blockHeld = false; },
   orb: (n: number) => { dropSouls(G.pos.clone().add(new THREE.Vector3(0.8, 0, 0)), n); },
@@ -2011,7 +2023,8 @@ window.__game = {
     }
   },
   setHp: (n: number) => { G.hp = Math.max(1, Math.min(hpMax(), n)); },
-  clearCombat: () => { G.hitstun = 0; G.atk = null; G.dodging = 0; G.blockHeld = false; G.moveAmt = 0; G.lastHitT = 0; G.lastCombo = 0; },
+  setGod: (on: boolean) => { G.god = !!on; if (G.god) G.hp = hpMax(); }, // M7 test hook
+  clearCombat: () => { G.hitstun = 0; G.atk = null; G.dodging = 0; G.blockHeld = false; G.moveAmt = 0; G.lastHitT = 0; G.lastCombo = 0; G.iframes = 0; },
   teleport: (x: number, z: number) => {
     const size = ZONES[G.zone].size;
     G.pos.set(THREE.MathUtils.clamp(x, -size + 1.2, size - 1.2), 0, THREE.MathUtils.clamp(z, -size + 1.2, size - 1.2));
@@ -2043,6 +2056,24 @@ window.__game = {
       childScale: G.boss.group.children[0] ? r(G.boss.group.children[0].scale.x) : -1,
       pos: [r(G.boss.group.position.x), r(G.boss.group.position.y), r(G.boss.group.position.z)],
     };
+  },
+  bossSettle: () => {
+    const b = G.boss;
+    if (!b) return null;
+    // M7 test hook: force a clean idle + freeze the AI so scripted attacks
+    // start from a known state (no walk, no auto-pick between test steps)
+    G.bossIntro = 0;
+    b.state = 'idle';
+    b.current = '';
+    b.telegraph = 0;
+    b.idle = 0.55;
+    b.charge = null;
+    b.lunge = null;
+    b.targetPos = null;
+    b.hitstop = 0;
+    b.hold = true;
+    for (const k of Object.keys(b.cds)) b.cds[k] = 1;
+    return b.state;
   },
   bossAttack: (name: string) => {
     if (G.boss && G.boss.def.attacks[name] && G.bossIntro <= 0) {

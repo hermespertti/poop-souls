@@ -164,10 +164,15 @@ await sleepFrames(page, 15);
 st = await S(page);
 ok('back to Idle after stopping', st.model && st.model.anim === 'Idle');
 // dodge -> Dodge clip
+await page.evaluate(() => window.__game.resetDodgeCd());
 await page.evaluate(() => window.__game.dodge());
-await sleepFrames(page, 6);
-st = await S(page);
-ok('dodge clip on dodge', st.model && st.model.anim === 'Dodge');
+let dodgeAnim = '';
+for (let i = 0; i < 10; i++) {
+  await sleepFrames(page, 2);
+  const q = await S(page);
+  if (q.model && q.model.anim === 'Dodge') { dodgeAnim = 'Dodge'; break; }
+}
+ok('dodge clip on dodge', dodgeAnim === 'Dodge');
 await sleepFrames(page, 30);
 // attack -> Attack1 clip (starter weapon, combo 1)
 await page.evaluate(() => { window.__game.clearCombat(); window.__game.attack(); });
@@ -430,6 +435,69 @@ ok('boss kill triggers slow-mo', pk.slowmo > 0);
 ok('boss kill flashes white', pk.whiteFlash > 0);
 await sleepFrames(page, 120);
 ok('post-kill slow-mo fully decays', (await S(page)).slowmo === 0);
+
+console.log('== M7 audio impact (slam / meteor / charge / parry SFX) ==');
+// fresh session, counters start at whatever — we diff
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.teleport(3, 3); window.__game.setAlt(0); window.__game.clearCombat(); window.__game.setHp(999); window.__game.setGod(true); });
+await sleepFrames(page, 6);
+const sfx0 = (await S(page)).sfx;
+// helper: bring a boss up and freeze its AI so scripted attacks are deterministic
+const bringBoss = async (page) => {
+  await page.evaluate(() => window.__game.startBoss());
+  await sleepFrames(page, 170); // 2.4s intro
+  await page.evaluate(() => window.__game.bossSettle());
+};
+const pollSfx = async (page, key, base, frames) => {
+  let best = { ...base };
+  for (let i = 0; i < frames; i++) {
+    await sleepFrames(page, 2);
+    const s = (await S(page)).sfx;
+    if ((s[key] ?? 0) > (best[key] ?? 0)) { best = s; break; }
+  }
+  return best;
+};
+  // boss slam thud (boss 1, zone 0)
+await bringBoss(page);
+await page.evaluate(() => window.__game.clearCombat());
+await page.evaluate(() => window.__game.setHp(999));
+await page.evaluate(() => window.__game.bossAttack('SeatSlam'));
+const sfxSlam = await pollSfx(page, 'slam', sfx0, 70); // 1.0s telegraph
+ok('boss slam fires slam SFX', (sfxSlam.slam ?? 0) > (sfx0.slam ?? 0));
+// parry clink — wait out the slam's hitstun so the parry frame is clean
+let guard = 0;
+while (guard++ < 60) {
+  const q = await S(page);
+  if (q.hitstun <= 0 && q.iframes <= 0 && q.dodging <= 0) break;
+  await sleepFrames(page, 4);
+}
+await page.evaluate(() => window.__game.clearCombat());
+await sleepFrames(page, 2);
+await page.evaluate(() => window.__game.parryHit(10));
+await sleepFrames(page, 2);
+const sfxParry = (await S(page)).sfx;
+ok('parry fires clink SFX', (sfxParry.clink ?? 0) > (sfxSlam.clink ?? 0));
+ok('parry fires parry chime too', (sfxParry.parry ?? 0) > (sfxSlam.parry ?? 0));
+// charge whoosh (boss 2, zone 1)
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 40);
+await bringBoss(page);
+await page.evaluate(() => window.__game.clearCombat());
+await page.evaluate(() => window.__game.setHp(999));
+await page.evaluate(() => window.__game.bossAttack('BloatCharge'));
+const sfxCharge = await pollSfx(page, 'charge', sfxParry, 60); // 0.9s telegraph
+ok('bloat charge fires whoosh SFX', (sfxCharge.charge ?? 0) > (sfxParry.charge ?? 0));
+// meteor thump (boss 3, zone 2)
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 40);
+await bringBoss(page);
+await page.evaluate(() => window.__game.clearCombat());
+await page.evaluate(() => window.__game.setHp(999));
+await page.evaluate(() => window.__game.bossAttack('MeteorDrop'));
+const sfxMeteor = await pollSfx(page, 'meteor', sfxCharge, 80); // 1.4s telegraph
+ok('meteor drop fires meteor SFX', (sfxMeteor.meteor ?? 0) > (sfxCharge.meteor ?? 0));
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => window.__game.killMobs());
 
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line

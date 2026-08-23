@@ -4,6 +4,12 @@ let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let noiseBuffer: AudioBuffer | null = null;
 
+// M7: deterministic per-SFX counters — tests diff these (same pattern as juicePops)
+const counters: Record<string, number> = {};
+function count(name: string): void {
+  counters[name] = (counters[name] ?? 0) + 1;
+}
+
 function ensureCtx(): AudioContext | null {
   if (!ctx) {
     const AC: typeof AudioContext | undefined =
@@ -79,6 +85,7 @@ export const SFX = {
   },
 
   swing(heavy: boolean): void {
+    count("swing");
     if (heavy) {
       noise(0.22, 0.3, 900);
       osc("sawtooth", 300, 80, 0.2, 0.15);
@@ -89,20 +96,24 @@ export const SFX = {
   },
 
   hitEnemy(): void {
+    count("hitEnemy");
     osc("square", 180, 60, 0.12, 0.3);
     noise(0.08, 0.2, 1200);
   },
 
   hitPlayer(): void {
+    count("hitPlayer");
     osc("square", 120, 40, 0.18, 0.35);
     noise(0.1, 0.2, 700);
   },
 
   block(): void {
+    count("block");
     osc("square", 800, 700, 0.05, 0.15);
   },
 
   parry(): void {
+    count("parry");
     osc("sine", 1200, 1900, 0.09, 0.3);
     noise(0.06, 0.12, 4000);
   },
@@ -162,5 +173,51 @@ export const SFX = {
 
   ui(): void {
     osc("square", 700, 700, 0.04, 0.08);
+  },
+
+  // ---- M7 audio impact: the big visual hits get a low end ------------------
+  // Boss slam / ground impact — sub-bass drop + dirt transient. `power` 0..1.
+  slam(power = 1): void {
+    count("slam");
+    const p = 0.5 + 0.5 * Math.min(1, power);
+    osc("sine", 110, 28, 0.34 * p + 0.14, 0.55 * p);
+    osc("sawtooth", 70, 30, 0.18, 0.18 * p);
+    noise(0.3, 0.35 * p, 240);
+    noise(0.06, 0.25 * p, 1800);
+  },
+
+  // Meteor landing — higher thump than a slam, with a long dust tail.
+  meteor(): void {
+    count("meteor");
+    osc("sine", 90, 22, 0.42, 0.5);
+    osc("square", 55, 24, 0.2, 0.2);
+    noise(0.55, 0.3, 320);
+    noise(0.1, 0.2, 1400);
+  },
+
+  // Spin / smear attack — a wide whoosh that peaks mid-sweep.
+  spinSweep(): void {
+    count("spin");
+    noise(0.28, 0.22, 900);
+    osc("sawtooth", 220, 90, 0.26, 0.12);
+  },
+
+  // Charge startup — rising rush before the body commits.
+  chargeWhoosh(): void {
+    count("charge");
+    osc("sawtooth", 60, 180, 0.35, 0.2);
+    noise(0.4, 0.18, 700);
+  },
+
+  // Parry — bright metallic ring over the existing chime.
+  clink(): void {
+    count("clink");
+    osc("square", 2400, 2350, 0.04, 0.16);
+    osc("sine", 5200, 4800, 0.12, 0.1);
+  },
+
+  // Verification tap — cumulative SFX fire counts, keyed by sound name.
+  counters(): Record<string, number> {
+    return { ...counters };
   },
 };
