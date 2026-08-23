@@ -265,6 +265,20 @@ export const SFX = {
     noise(0.1, 0.08, 160);
   },
 
+  // ---- M10 boss phase break: the fight's gear shift -------------------------
+  // Two sawtooths detuned 25Hz (they beat against each other) falling a
+  // dissonant interval, a grounded impact, then a rising menace growl.
+  // Sits between bossRoar (the fight begins) and bossDefeat (it ends): this
+  // is the middle of the fight going wrong.
+  phaseBreak(): void {
+    count("phaseBreak");
+    osc("sawtooth", 440, 330, 0.4, 0.2); // dissonant parallel fall
+    osc("sawtooth", 415, 311, 0.4, 0.2); // 25Hz detune -> beating
+    osc("sine", 80, 28, 0.32, 0.5, 0.42); // impact
+    noise(0.28, 0.22, 260, 0.42);
+    osc("sawtooth", 60, 130, 0.5, 0.14, 0.5); // rising menace
+  },
+
   // Verification tap — cumulative SFX fire counts, keyed by sound name.
   counters(): Record<string, number> {
     return { ...counters };

@@ -657,6 +657,59 @@ const veilFull = await page.evaluate(() => parseFloat(getComputedStyle(document.
 ok('red veil clears at full HP', veilFull < 0.01);
 await page.evaluate(() => window.__game.setHp(999));
 
+console.log('== M10 phase breaks (escalation + drama) ==');
+// M9 left us in zone 0 at full HP — bring the King up and wait out the intro
+await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170); // 2.4s intro
+await page.evaluate(() => window.__game.setHp(999));
+const pk0 = (await S(page)).boss;
+ok('boss spawns at phase 0 (full HP)', pk0.phaseIdx === 0);
+ok('phase 0 pool is the opening kit', !pk0.phaseAttacks.includes('Spin'));
+// cross the King's 0.5 threshold -> phase break
+const sfxPB0 = (await S(page)).sfx;
+await page.evaluate(() => window.__game.setBossHp(299)); // 299/600 = 0.498 < 0.5
+await sleepFrames(page, 6);
+const pk1 = (await S(page)).boss;
+ok('phase break at threshold: phaseIdx 0 -> 1', pk1.phaseIdx === 1);
+ok('phaseBreak SFX fires', ((await S(page)).sfx.phaseBreak ?? 0) > (sfxPB0.phaseBreak ?? 0));
+ok('stagger window opens after break', (await S(page)).boss.phaseBreakT > 0.1);
+ok('phase 1 pool adds Spin', (await S(page)).boss.phaseAttacks.includes('Spin'));
+ok('HUD label reads PHASE 2 / 2', await page.$eval('#bossSub', (e) => e.textContent === 'PHASE 2 / 2'));
+// wait out the full 0.9s stagger, then the boss must be mobile again (AI alive)
+for (let i = 0; i < 120; i++) {
+  if ((await S(page)).boss.phaseBreakT <= 0.05) break;
+  await sleepFrames(page, 2);
+}
+ok('stagger decays (AI resumes)', (await S(page)).boss.phaseBreakT <= 0.2);
+// advance to zone 1 (Overflow, 3 phases)
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170);
+await page.evaluate(() => window.__game.setHp(999));
+const ol0 = (await S(page)).boss;
+ok('Overflow spawns at phase 0', ol0.phaseIdx === 0 && !ol0.phaseAttacks.includes('BloatCharge'));
+const sfxPB1 = (await S(page)).sfx;
+await page.evaluate(() => window.__game.setBossHp(599)); // 0.599 < 0.6 -> phase 1
+await sleepFrames(page, 6);
+ok('Overflow phase break -> 1 (GasCloud enters pool)', (await S(page)).boss.phaseIdx === 1 && (await S(page)).boss.phaseAttacks.includes('GasCloud'));
+const sfxPB2 = (await S(page)).sfx;
+await page.evaluate(() => window.__game.setBossHp(299)); // 0.299 < 0.3 -> phase 2
+await sleepFrames(page, 6);
+ok('Overflow phase break -> 2 (BloatCharge enters pool)', (await S(page)).boss.phaseIdx === 2 && (await S(page)).boss.phaseAttacks.includes('BloatCharge'));
+ok('each break fires its own sting', (sfxPB2.phaseBreak ?? 0) > (sfxPB1.phaseBreak ?? 0) && (sfxPB1.phaseBreak ?? 0) > (sfxPB0.phaseBreak ?? 0));
+ok('HUD label tracks escalation (PHASE 3 / 3)', await page.$eval('#bossSub', (e) => e.textContent === 'PHASE 3 / 3'));
+// escalation is real: any windup after the break must come from the pool.
+// (If the boss idles the whole window there's nothing to check — pass.)
+const used = new Set();
+for (let i = 0; i < 480; i++) {
+  await sleepFrames(page, 2);
+  const b = (await S(page)).boss;
+  if (b.state === 'windup' && b.atkName) used.add(b.atkName);
+}
+const pool2 = (await S(page)).boss.phaseAttacks;
+ok('post-break attacks come from the escalated pool', used.size === 0 || [...used].every((a) => pool2.includes(a)));
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

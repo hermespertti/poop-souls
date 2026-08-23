@@ -32,6 +32,8 @@ interface Boss {
   hitstop: number; idle: number; hold: boolean; charge: { dir: THREE.Vector3; t: number; dmg: number } | null;
   lunge: { dir: THREE.Vector3; t: number } | null; targetPos: THREE.Vector3 | null;
   baseY: number; phase: number;
+  // M10: phase-break drama — escalation tracking + stagger window
+  phaseIdx: number; phaseBreakT: number;
   // Blender GLB (optional — null mixer = procedural fallback)
   mats: THREE.MeshStandardMaterial[];
   mixer: THREE.AnimationMixer | null;
@@ -1318,6 +1320,7 @@ function startBoss() {
     def, group, mat, hp: def.hp, state: 'idle',
     cds: {}, current: '', telegraph: 0, hitstop: 0, idle: 0.55, hold: false,
     charge: null, lunge: null, targetPos: null, baseY: zb.boss.y, phase: Math.random() * 6.28,
+    phaseIdx: 0, phaseBreakT: 0,
     mats: [mat], mixer: null, actions: {}, curAnim: '', clipUntil: 0,
   };
   for (const a of Object.keys(def.attacks)) newBoss.cds[a] = 1;
@@ -1457,7 +1460,39 @@ function updateBoss(dt: number) {
   if (b.hitstop > 0) { b.hitstop -= dt; return; }
   const maxHp = b.def.hp;
   const frac = b.hp / maxHp;
-  const phase = b.def.phases.find((p) => p.hpFrac >= frac) ?? b.def.phases[b.def.phases.length - 1];
+  // M10: escalation — the phase index is how many HP thresholds the boss has
+  // dropped below (0 at full health, deepest at 0). The old find() was inverted:
+  // it returned the FIRST threshold >= frac, so bosses spawned in their deepest
+  // phase (full power) and dropped to their weakest phase early in the fight,
+  // and the HUD label ran backwards. Now they gear UP as they weaken.
+  // Runs even DURING the stagger, so a burst that crosses two thresholds in one
+  // window re-breaks immediately into the deeper phase (fresh sting + stagger).
+  const idx = Math.min(b.def.phases.length - 1, b.def.phases.filter((p) => frac < p.hpFrac).length);
+  const phase = b.def.phases[idx];
+  if (idx > b.phaseIdx) {
+    b.phaseIdx = idx;
+    b.phaseBreakT = 0.9; // stagger window (see below)
+    SFX.phaseBreak();
+    shakeCamera(0.18);
+    G.slowmo = Math.max(G.slowmo, 0.4); // M6 slow-mo beat
+    G.flashExposure = Math.max(G.flashExposure, 0.35);
+    G.gameHitstop = Math.max(G.gameHitstop, 0.06);
+    toast(`PHASE ${idx + 1} — ${b.def.name.toUpperCase()}`, 1.8);
+    for (const m of b.mats) { m.emissive.setHex(0xff3322); m.emissiveIntensity = 1.5; }
+  }
+  // M10: phase-break stagger — the boss reels, roars, and stands still for a
+  // beat after the gear shift (real hit windows for the player). The break's
+  // red emissive spike decays back to base over the window.
+  if (b.phaseBreakT > 0) {
+    b.phaseBreakT -= dt;
+    b.mixer?.update(dt);
+    const k = Math.max(0, b.phaseBreakT / 0.9); // 1 -> 0 across the stagger
+    for (const m of b.mats) {
+      m.emissive.setHex(0xff3322);
+      m.emissiveIntensity = (m.userData.baseIntensity ?? 0.08) + k * 1.4;
+    }
+    return;
+  }
   const size = ZONES[G.zone].size;
   // face player
   const dx = G.pos.x - b.group.position.x;
@@ -1884,10 +1919,8 @@ function syncUI(dt: number) {
     elBossWrap.style.display = 'block';
     elBossName.textContent = `${G.boss.def.name} — ${G.boss.def.title}`;
     elBossBar.style.width = `${Math.max(0, G.boss.hp / G.boss.def.hp) * 100}%`;
-    const frac = G.boss.hp / G.boss.def.hp;
-    const phase = G.boss.def.phases.find((p) => p.hpFrac >= frac);
-    const idx = G.boss.def.phases.indexOf(phase ?? G.boss.def.phases[0]);
-    elBossSub.textContent = `PHASE ${G.boss.def.phases.length - idx} / ${G.boss.def.phases.length}`;
+    // M10: phaseIdx is the single source of truth (fixed the inverted find)
+    elBossSub.textContent = `PHASE ${G.boss.phaseIdx + 1} / ${G.boss.def.phases.length}`;
   } else {
     elBossWrap.style.display = 'none';
   }
@@ -1959,6 +1992,9 @@ window.__game = {
       active: G.bossActive, name: G.boss.def.name, hp: Math.round(G.boss.hp), maxHp: G.boss.def.hp,
       state: G.boss.state, intro: Math.round(G.bossIntro * 10) / 10,
       tele: Math.round(G.boss.telegraph * 100) / 100,
+      phaseIdx: G.boss.phaseIdx, phaseBreakT: Math.round(G.boss.phaseBreakT * 100) / 100,
+      atkName: G.boss.current, // M10 test hook: attack currently winding up
+      phaseAttacks: G.boss.def.phases[G.boss.phaseIdx].attacks,
       x: Math.round(G.boss.group.position.x * 10) / 10, z: Math.round(G.boss.group.position.z * 10) / 10,
       glb: G.boss.mixer ? { loaded: true, anim: G.boss.curAnim } : { loaded: false, anim: 'procedural' },
     } : null,
