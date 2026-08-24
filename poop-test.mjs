@@ -886,6 +886,87 @@ const m14rest = await page.evaluate(async () => {
 ok(`respawn stays in the bonfire nook, no arena snap-back (dead=${m14rest.dead}, mode=${m14rest.mode}, ${m14rest.x.toFixed(1)},${m14rest.z.toFixed(1)})`,
    m14rest.dead === 'over' && m14rest.mode === 'play' && m14rest.x < -19 && m14rest.z < -19);
 
+console.log('== M15: pause & safe save/quit ==');
+// Pre-M15, ESC only released the pointer lock — the sim kept ticking behind the
+// menu (mobs could kill you "while paused") and there was no quit-to-title, so
+// leaving the page lost the run. Now ESC pauses (sim frozen, autosave), ESC/Q
+// resumes or quits to the title with CONTINUE restoring the run.
+st = await S(page);
+ok('pause panel hidden during play', await page.$eval('#panelPause', (e) => e.style.display === 'none'));
+const m15snap = await page.evaluate(() => {
+  const g = window.__game;
+  g.killMobs(); g.spawnMob('biber');
+  const s0 = g.state();
+  return { runT: s0.runT, x: s0.pos.x, z: s0.pos.z, mobs: s0.mobs.map((m) => m.x + ',' + m.z) };
+});
+await page.keyboard.press('Escape'); // play -> pause
+await sleep(900); // long enough for a real tick to damage/move things if unfrozen
+const m15frozen = await page.evaluate(() => {
+  const g = window.__game;
+  const s1 = g.state();
+  return {
+    mode: s1.mode, runT: s1.runT, x: s1.pos.x, z: s1.pos.z,
+    mobs: s1.mobs.map((m) => m.x + ',' + m.z),
+    hp: s1.hp,
+    panel: document.getElementById('panelPause').style.display,
+    info: document.getElementById('pauseInfo').textContent,
+  };
+});
+ok(`ESC pauses the sim (mode=${m15frozen.mode})`, m15frozen.mode === 'pause');
+ok('pause panel visible with a run summary', m15frozen.panel === 'flex' && m15frozen.info.includes('progress saved'));
+// Headless pacing: swiftshader runs ~10fps with dt capped at 0.05, so at most
+// a couple of frames (<=0.15s runT, <=0.5u biber drift) can elapse between the
+// snapshot and the key landing. An UNpaused sim would accrue ~0.4s/2u over the
+// 900ms wait — the thresholds sit far inside both bands.
+const runTDelta = Math.abs(m15frozen.runT - m15snap.runT);
+const mobDelta = m15frozen.mobs.length !== m15snap.mobs.length ? 999 : m15frozen.mobs.reduce((a, m, i) => {
+  const [ax, az] = m.split(',').map(Number);
+  const [bx, bz] = m15snap.mobs[i].split(',').map(Number);
+  return a + Math.hypot(ax - bx, az - bz);
+}, 0);
+ok(`sim truly frozen while paused (runT +${runTDelta.toFixed(3)}s, mob drift ${mobDelta.toFixed(2)}u)`,
+   runTDelta < 0.3 && mobDelta < 0.6);
+await page.keyboard.press('Escape'); // pause -> resume
+await sleep(300);
+st = await S(page);
+ok('ESC again resumes', st.mode === 'play' && (await page.$eval('#panelPause', (e) => e.style.display === 'none')));
+// quit-to-title: ESC to pause, Q to quit (keyboard path, no mouse needed)
+await page.keyboard.press('Escape');
+await sleep(200);
+await page.keyboard.press('KeyQ');
+await sleep(300);
+st = await S(page);
+ok(`Q from the pause menu quits to title (mode=${st.mode})`, st.mode === 'title' && (await page.$eval('#panelTitle', (e) => e.style.display === 'flex')));
+const m15cont = await page.evaluate(() => {
+  const c = document.getElementById('btnContinue');
+  const info = document.getElementById('contInfo').textContent;
+  const saved = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  return { contDisabled: c.disabled, info, savedZone: saved ? saved.zone : -1, savedSouls: saved ? saved.souls : -1 };
+});
+ok('title CONTINUE reflects the saved run', !m15cont.contDisabled && m15cont.info.includes('/3 bosses') && m15cont.savedZone === 0);
+await page.evaluate(() => window.__game.continueGame());
+await sleep(300);
+st = await S(page);
+ok(`CONTINUE restores the run (mode=${st.mode}, zone ${st.zone})`, st.mode === 'play' && st.zone === 0 && st.zoneName === 'The Porcelain Hollow');
+// hook-level round-trip: the pause hook must freeze the sim even without a key
+st = await S(page);
+const m15hook = await page.evaluate(() => {
+  const g = window.__game;
+  g.killMobs();
+  const s0 = g.state();
+  g.pause();
+  return { mode: g.state().mode, runT: s0.runT, x: s0.pos.x, z: s0.pos.z };
+});
+await sleep(500);
+const m15hook2 = await page.evaluate(() => {
+  const g = window.__game;
+  const s = g.state();
+  g.resume();
+  return { modeBefore: 'pause', resumeMode: g.state().mode, runT: s.runT, x: s.pos.x, z: s.pos.z };
+});
+ok('pause()/resume() hooks freeze + thaw the sim (runT held)',
+   m15hook.mode === 'pause' && Math.abs(m15hook2.runT - m15hook.runT) < 0.05 && m15hook2.resumeMode === 'play');
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

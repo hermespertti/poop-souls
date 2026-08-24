@@ -71,7 +71,7 @@
 </div>
 <div id="bossWrap"><div id="bossName"></div><div id="bossBar"><i></i></div><div id="bossSub"></div></div>
 <div id="interact"></div>
-<div id="hint">click to look · WASD move (camera-relative) · F lock on · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · R drink flask · E interact / ladders</div>
+<div id="hint">click to look · WASD move (camera-relative) · F lock on · LMB attack · RMB block (tap = parry) · SPACE dodge · Q/1-4 weapon · R drink flask · E interact / ladders · ESC pause</div>
 <div id="toast"></div>
 <div id="dreadVeil"></div>
 <div id="dmgWrap"></div>
@@ -98,6 +98,15 @@
     <div class="srow"><span class="name">FLASK</span><span class="val" id="shFlask">—</span><span class="cost" style="color:var(--dim)">refilled here</span></div>
     <div style="text-align:right;margin-top:14px"><button class="btn small" id="btnCloseShrine">CLOSE (E)</button></div>
     <div class="note" style="margin-top:10px">Souls: <span id="shSouls" style="color:var(--soul)"></span> · Grit: <span id="shGrit" style="color:var(--grit)"></span></div>
+  </div>
+</div>
+
+<div class="panel" id="panelPause">
+  <h1>PAUSED</h1>
+  <div class="sub" id="pauseInfo"></div>
+  <div>
+    <button class="btn" id="btnResume">RESUME (ESC)</button>
+    <button class="btn" id="btnQuit">QUIT TO TITLE (Q)</button>
   </div>
 </div>
 

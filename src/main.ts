@@ -17,7 +17,7 @@ declare global {
 }
 
 // ============================== state ==============================
-type Mode = 'title' | 'play' | 'shrine' | 'over' | 'win';
+type Mode = 'title' | 'play' | 'shrine' | 'pause' | 'over' | 'win';
 
 interface Attack { combo: number; t: number; dur: number; hitDone: boolean; }
 interface Mob {
@@ -126,6 +126,7 @@ const panelTitle = $('panelTitle');
 const panelShrine = $('panelShrine');
 const panelOver = $('panelOver');
 const panelWin = $('panelWin');
+const panelPause = $('panelPause');
 
 let toastTimer = 0;
 function toast(text: string, dur = 1.8) {
@@ -1731,6 +1732,30 @@ function closeShrine() {
   G.mode = 'play';
   SFX.ui();
 }
+// M15: pause & safe save/quit. Pre-M15, ESC only released the pointer lock —
+// the sim kept running, so mobs and bosses kept hitting you behind the menu
+// and there was no way back to the title without losing the run.
+function openPause() {
+  G.mode = 'pause';
+  spaceQueued = false; // a dodge queued before the pause shouldn't fire on resume
+  SFX.ui();
+  MUS.duck(true); // drop the ambience under the menu
+  save(); // safe point — quitting to title keeps everything
+  $('pauseInfo').textContent = `LV ${levelOf()} · ${ZONES[G.zone].name} · ${G.save.bossesDefeated.filter(Boolean).length}/3 bosses · ${G.save.souls} souls — progress saved`;
+}
+function closePause() {
+  G.mode = 'play';
+  SFX.ui();
+  MUS.duck(false);
+}
+function quitToTitle() {
+  save();
+  G.cinematic = false;
+  G.mode = 'title';
+  MUS.duck(false); // title screen carries full ambience, like a fresh load
+  SFX.ui();
+  refreshTitle();
+}
 function renderShrine() {
   const s = G.save.stats;
   const set = (idV: string, idC: string, idB: string, val: number, key: 'v' | 'e' | 's' | 'c') => {
@@ -1846,6 +1871,13 @@ window.addEventListener('keydown', (e) => {
     else if (G.mode === 'shrine') closeShrine();
     else if (G.mode === 'over') resurrect();
   }
+  // M15: ESC pauses from play; from pause, resumes (a second ESC press after
+  // the browser's first one unlocked the pointer also lands here)
+  if (k === 'escape') {
+    if (G.mode === 'play') openPause();
+    else if (G.mode === 'pause') closePause();
+  }
+  if (G.mode === 'pause' && (k === 'enter' || k === 'q')) quitToTitle(); // keyboard path: no mouse needed
   if (k === 'q') {
     if (G.mode === 'play') switchWeapon((G.weaponIdx + 1) % WEAPONS.length);
   }
@@ -1898,6 +1930,8 @@ window.addEventListener('wheel', (e) => {
 ($('btnRespawn') as HTMLButtonElement).onclick = () => { panelOver.style.display = 'none'; resurrect(); };
 ($('btnCloseShrine') as HTMLButtonElement).onclick = () => { panelShrine.style.display = 'none'; closeShrine(); };
 ($('btnAgain') as HTMLButtonElement).onclick = () => { panelWin.style.display = 'none'; panelTitle.style.display = 'none'; newGame(); refreshTitle(); };
+($('btnResume') as HTMLButtonElement).onclick = () => { closePause(); };
+($('btnQuit') as HTMLButtonElement).onclick = () => { quitToTitle(); };
 
 // pointer-lock ↔ UI mode sync: menus need a real cursor, combat uses pointer lock
 function syncPointerLock() {
@@ -1918,6 +1952,13 @@ function syncUI(dt: number) {
     toastTimer -= dt;
     if (toastTimer <= 0) elToast.style.opacity = '0';
   }
+  // M15: panel visibility first — the cinematic branch below returns early,
+  // and pausing mid-boss-intro must still show the pause panel
+  panelTitle.style.display = G.mode === 'title' ? 'flex' : 'none';
+  panelShrine.style.display = G.mode === 'shrine' ? 'flex' : 'none';
+  panelPause.style.display = G.mode === 'pause' ? 'flex' : 'none';
+  panelOver.style.display = G.mode === 'over' ? 'flex' : 'none';
+  panelWin.style.display = G.mode === 'win' ? 'flex' : 'none';
   if (G.cinematic) {
     elHud.style.display = 'none';
     elHudRight.style.display = 'none';
@@ -1965,10 +2006,6 @@ function syncUI(dt: number) {
       if (!elInteract.textContent) elInteract.style.display = 'none';
     } else elInteract.style.display = 'none';
   } else elInteract.style.display = 'none';
-  // panels
-  panelShrine.style.display = G.mode === 'shrine' ? 'flex' : 'none';
-  panelOver.style.display = G.mode === 'over' ? 'flex' : 'none';
-  panelWin.style.display = G.mode === 'win' ? 'flex' : 'none';
 }
 
 // ============================== camera ==============================
@@ -2016,6 +2053,7 @@ window.__game = {
     weapon: G.weaponIdx, weaponTier: G.save.weaponTiers[G.weaponIdx],
     weaponName: WEAPONS[G.weaponIdx].name,
     kills: G.kills, deaths: G.deaths, level: levelOf(),
+    runT: Math.round(G.runT * 100) / 100, // M15: pause tests read the sim clock
     mobs: G.mobs.map((m) => ({ id: m.def.id, hp: Math.round(m.hp), x: Math.round(m.group.position.x * 10) / 10, z: Math.round(m.group.position.z * 10) / 10, tg: Math.round(m.telegraph * 100) / 100 })),
     yaw: Math.round(G.yaw * 100) / 100,
     cam: { x: Math.round(camera.position.x * 10) / 10, z: Math.round(camera.position.z * 10) / 10 },
@@ -2185,6 +2223,9 @@ window.__game = {
   bossAnim: (name: string) => { if (G.boss && G.boss.mixer && G.boss.actions[name]) { bossSetAnim(G.boss, name, false, 1); return G.boss.curAnim; } return G.boss ? G.boss.curAnim : null; },
   resurrect,
   openShrine,
+  pause: () => openPause(),
+  resume: () => closePause(),
+  quit: () => quitToTitle(),
   cinematic: (v: boolean) => { G.cinematic = v; },
   bossScreen: () => {
     // where does the boss's head render on screen? (NDC -> pixels)
