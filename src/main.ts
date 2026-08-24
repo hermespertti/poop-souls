@@ -1756,6 +1756,17 @@ function quitToTitle() {
   SFX.ui();
   refreshTitle();
 }
+// M16: victory epilogue. Winning no longer dead-ends the session — ESC (or
+// the button) drops you back into the cleansed Throne to roam freely: spend
+// leftover souls, rest at the bonfire, gawk at the open boss door.
+function exitWin() {
+  if (G.mode !== 'win') return;
+  G.mode = 'play';
+  spaceQueued = false;
+  MUS.duck(false);
+  SFX.ui();
+  toast('THE THRONE IS CLEAN. ROAM FREELY.', 2.6);
+}
 function renderShrine() {
   const s = G.save.stats;
   const set = (idV: string, idC: string, idB: string, val: number, key: 'v' | 'e' | 's' | 'c') => {
@@ -1876,6 +1887,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'escape') {
     if (G.mode === 'play') openPause();
     else if (G.mode === 'pause') closePause();
+    else if (G.mode === 'win') exitWin(); // M16: the epilogue ends — roam the cleansed Throne
   }
   if (G.mode === 'pause' && (k === 'enter' || k === 'q')) quitToTitle(); // keyboard path: no mouse needed
   if (k === 'q') {
@@ -1930,6 +1942,7 @@ window.addEventListener('wheel', (e) => {
 ($('btnRespawn') as HTMLButtonElement).onclick = () => { panelOver.style.display = 'none'; resurrect(); };
 ($('btnCloseShrine') as HTMLButtonElement).onclick = () => { panelShrine.style.display = 'none'; closeShrine(); };
 ($('btnAgain') as HTMLButtonElement).onclick = () => { panelWin.style.display = 'none'; panelTitle.style.display = 'none'; newGame(); refreshTitle(); };
+($('btnRoam') as HTMLButtonElement).onclick = () => { exitWin(); }; // M16
 ($('btnResume') as HTMLButtonElement).onclick = () => { closePause(); };
 ($('btnQuit') as HTMLButtonElement).onclick = () => { quitToTitle(); };
 
@@ -2226,6 +2239,8 @@ window.__game = {
   pause: () => openPause(),
   resume: () => closePause(),
   quit: () => quitToTitle(),
+  roam: () => exitWin(), // M16: victory epilogue -> roam the cleansed zone
+  win: () => { G.mode = 'win'; }, // M16: debug — jump straight to the epilogue
   cinematic: (v: boolean) => { G.cinematic = v; },
   bossScreen: () => {
     // where does the boss's head render on screen? (NDC -> pixels)

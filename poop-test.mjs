@@ -967,6 +967,52 @@ const m15hook2 = await page.evaluate(() => {
 ok('pause()/resume() hooks freeze + thaw the sim (runT held)',
    m15hook.mode === 'pause' && Math.abs(m15hook2.runT - m15hook.runT) < 0.05 && m15hook2.resumeMode === 'play');
 
+console.log('== M16: victory epilogue ==');
+// Pre-M16 the win screen was a dead end: only NEW GAME (or a refresh) got you
+// out. Now ESC (or KEEP ROAMING) drops you back into the cleansed Throne to
+// roam — spend leftover souls, rest, gawk at the open door — and NEW GAME
+// still resets the run. Reach win via the real three-boss path first.
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); });
+await sleepFrames(page, 3);
+for (const _name of ['porcelain_king', 'overflow_lord', 'great_stool']) {
+  await page.evaluate(() => window.__game.startBoss());
+  await sleepFrames(page, 5);
+  await page.evaluate(() => window.__game.killBoss());
+  await sleepFrames(page, 30);
+}
+st = await S(page);
+ok('full clear still reaches the win screen', st.mode === 'win');
+ok('KEEP ROAMING button present on the win panel', await page.$('#btnRoam'));
+ok('win stats still populated', await page.evaluate(() => document.getElementById('winStats').textContent.length > 10));
+// ESC exits the epilogue into the cleansed final zone
+await page.keyboard.press('Escape');
+await sleep(300);
+st = await S(page);
+ok('ESC exits the victory epilogue to play', st.mode === 'play');
+ok('back in the cleansed Throne', st.zone === 2 && st.zoneName === 'The Grand Throne');
+ok('win panel hidden after exit', await page.$eval('#panelWin', (e) => e.style.display === 'none'));
+// the cleansed boss door still acknowledges you — E near it toasts the open way
+await page.evaluate(() => { window.__game.killMobs(); window.__game.teleport(0, -30.5); window.__game.setAlt(0); });
+await sleepFrames(page, 5);
+await page.keyboard.press('KeyE');
+await sleepFrames(page, 3);
+const doorToast = await page.evaluate(() => document.getElementById('toast').textContent);
+ok(`cleansed boss door acknowledges (toast: "${doorToast}")`, doorToast.includes('door is open'));
+// KEEP ROAMING button (mouse path) matches the ESC path
+await page.evaluate(() => { window.__game.win(); });
+await sleepFrames(page, 3);
+ok('win() hook re-opens the epilogue', (await S(page)).mode === 'win');
+await page.evaluate(() => { document.getElementById('btnRoam').click(); });
+await sleepFrames(page, 3);
+ok('KEEP ROAMING button returns to play', (await S(page)).mode === 'play');
+// NEW GAME still resets the run from the epilogue
+await page.evaluate(() => { window.__game.win(); });
+await sleepFrames(page, 3);
+await page.evaluate(() => { document.getElementById('btnAgain').click(); });
+await sleepFrames(page, 5);
+st = await S(page);
+ok('NEW GAME still resets the run from the epilogue', st.mode === 'play' && st.zone === 0 && st.zoneName === 'The Porcelain Hollow');
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));
