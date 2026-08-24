@@ -1349,6 +1349,11 @@ function startBoss() {
         const m = o as THREE.Mesh;
         if (m.isMesh) {
           m.castShadow = true;
+          // boss stays readable in the mist: exempt its materials from scene fog
+          // (the arena keeps the mood; the one thing you must read telegraphs
+          // on must not dissolve into it)
+          const mats = Array.isArray(m.material) ? m.material : [m.material];
+          for (const mmx of mats) (mmx as THREE.Material & { fog: boolean }).fog = false;
           const mm = m.material as THREE.MeshStandardMaterial;
           if (mm && mm.emissive && !newBoss.mats.includes(mm)) {
             mm.userData.baseEmissive = mm.emissive.clone();
@@ -1408,6 +1413,15 @@ function makeBossGroup(def: BossDef): { group: THREE.Group; mat: THREE.MeshStand
     g.add(eL, eR);
   }
   g.scale.setScalar(def.scale * 0.55);
+  // fog-exempt the boss (procedural path): scene fog stays on the arena, but
+  // the boss must read at 30u+ in the marsh/throne mists
+  g.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) {
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const x of mats) (x as THREE.Material & { fog: boolean }).fog = false;
+    }
+  });
   return { group: g, mat };
 }
 
@@ -1994,6 +2008,7 @@ window.__game = {
       tele: Math.round(G.boss.telegraph * 100) / 100,
       phaseIdx: G.boss.phaseIdx, phaseBreakT: Math.round(G.boss.phaseBreakT * 100) / 100,
       atkName: G.boss.current, // M10 test hook: attack currently winding up
+      fogFree: G.boss.mats.every((m) => m.fog === false), // M11: boss exempt from scene fog
       phaseAttacks: G.boss.def.phases[G.boss.phaseIdx].attacks,
       x: Math.round(G.boss.group.position.x * 10) / 10, z: Math.round(G.boss.group.position.z * 10) / 10,
       glb: G.boss.mixer ? { loaded: true, anim: G.boss.curAnim } : { loaded: false, anim: 'procedural' },

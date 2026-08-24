@@ -710,6 +710,30 @@ for (let i = 0; i < 480; i++) {
 const pool2 = (await S(page)).boss.phaseAttacks;
 ok('post-break attacks come from the escalated pool', used.size === 0 || [...used].every((a) => pool2.includes(a)));
 
+console.log('== M11 boss fog-exemption (readability in the mists) ==');
+// M10 left us in zone 1 with the Overflow Lord active — GLB loaded by now.
+// Pre-M11 measurement: bosses were 79-100% fogged at camera distance in every
+// zone (100% in the marsh and throne). The fix fog-exempts the boss meshes
+// while the arena keeps its mood fog.
+ok('boss materials are fog-exempt (zone 1, GLB path)', (await S(page)).boss.fogFree === true);
+const fs1 = await page.evaluate(() => window.__game.bossScreen());
+ok('scene fog stays active for the arena (mood preserved)', fs1.fog && fs1.fog[1] > fs1.fog[0]);
+// advance to the throne — biggest boss in the biggest arena with the heaviest mist
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170); // intro + GLB
+await page.evaluate(() => window.__game.setHp(999));
+ok('throne boss materials are fog-exempt too', (await S(page)).boss.fogFree === true);
+const fs2 = await page.evaluate(() => window.__game.bossScreen());
+ok('heaviest-mist zone fog is intact (far > 30u)', fs2.fog[1] > 30);
+// and the zone-0 King via a fresh run (covers the full GLB reload path)
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170);
+ok('fresh-run zone 0 boss is fog-exempt', (await S(page)).boss.fogFree === true);
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

@@ -54,3 +54,7 @@ verify-boss-all.mjs
 fix-boss-*.png
 fix-boss-eyeball.mjs
 cap-prod-m8.mjs
+
+# M11 fog measurement artifacts
+measure-fog.mjs
+fog-*.png
