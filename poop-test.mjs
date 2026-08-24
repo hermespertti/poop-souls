@@ -174,11 +174,18 @@ for (let i = 0; i < 10; i++) {
 }
 ok('dodge clip on dodge', dodgeAnim === 'Dodge');
 await sleepFrames(page, 30);
-// attack -> Attack1 clip (starter weapon, combo 1)
+// attack -> Attack1 clip (starter weapon, combo 1). Poll like the dodge check:
+// the clip fires on the first frame, but a fixed sleepFrames(6) sample races the
+// puppeteer IPC gap + swiftshader frame pacing (post-M14 the player now stands in
+// the NW nook at r=28.3 instead of the old r=21.4 clamp, shifting frame timing).
 await page.evaluate(() => { window.__game.clearCombat(); window.__game.attack(); });
-await sleepFrames(page, 6);
-st = await S(page);
-ok('attack1 clip on attack', st.model && st.model.anim === 'Attack1');
+let atkAnim = '';
+for (let i = 0; i < 24; i++) {
+  const q = await S(page);
+  if (q.model && q.model.anim === 'Attack1') { atkAnim = 'Attack1'; break; }
+  await sleepFrames(page, 1);
+}
+ok('attack1 clip on attack', atkAnim === 'Attack1');
 await sleepFrames(page, 60);
 st = await S(page);
 ok('returns to Idle after attack', st.model && st.model.anim === 'Idle');
@@ -785,6 +792,99 @@ await page.evaluate(() => window.__game.killBoss()); // zone 0 -> 1, layer relea
 await sleepFrames(page, 60); // release done, layer disconnected
 const lyrAfter = await page.evaluate(() => window.__game.musicLayer(600));
 ok(`released layer is silent (rms=${lyrAfter})`, lyrAfter <= 0.0005);
+
+console.log('== M14 corner nooks reachable (no invisible wall) ==');
+// Pre-M14 the M5 ground-physics radial cap clamped players to walkIn+0.6
+// (r<=21.4) EVEN inside corridor openings — so the shrine/bonfire/spawn
+// nooks at r~28-31 were 10u behind an invisible wall: no interact hint,
+// no shop, and every death/boss-advance snapped the player back to the arena.
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); });
+// real player path: hold W from the arena, steering the camera at the shrine
+await page.evaluate(() => { window.__game.teleport(4, -4); window.__game.setCam(0, 0.42); window.__game.clearCombat(); });
+await sleepFrames(page, 5);
+const m14walk = await page.evaluate(async () => {
+  const g = window.__game;
+  const K = (type, key) => window.dispatchEvent(new KeyboardEvent(type, { key, code: 'Key' + key, bubbles: true }));
+  K('keydown', 'W');
+  let best = Infinity;
+  for (let i = 0; i < 900; i++) {
+    const s = g.state();
+    const dx = 22 - s.pos.x, dz = -22 - s.pos.z;
+    const d = Math.hypot(dx, dz);
+    best = Math.min(best, d);
+    if (d < 1.6) break;
+    g.setCam(Math.atan2(dx, dz)); // W = camera forward
+    await new Promise((r) => requestAnimationFrame(r));
+  }
+  K('keyup', 'W');
+  const s = g.state();
+  return {
+    d: Math.hypot(22 - s.pos.x, -22 - s.pos.z),
+    hint: document.getElementById('interact').textContent,
+    hintVisible: document.getElementById('interact').style.display !== 'none',
+    alt: s.alt,
+  };
+});
+ok(`walk to the shrine nook without a snap-back (d=${m14walk.d.toFixed(2)})`, m14walk.d < 2.5 && m14walk.alt < 1);
+ok('shrine interact hint shows at the nook', m14walk.hint.includes('SHRINE') && m14walk.hintVisible);
+await page.keyboard.press('KeyE');
+await sleepFrames(page, 5);
+st = await S(page);
+ok('E opens the shrine shop', st.mode === 'shrine');
+// spending souls in the shop: drop orbs inside the nook and buy vigor (30 souls)
+const m14spend = await page.evaluate(async () => {
+  const g = window.__game;
+  g.orb(50); // pickup radius 1.3 works in shrine mode
+  await new Promise((r) => setTimeout(r, 500));
+  const v0 = g.state().stats.v, souls0 = g.state().souls;
+  const btn = document.getElementById('btnV');
+  btn.click();
+  return { v0, v1: g.state().stats.v, souls0, souls1: g.state().souls, disabled: btn.disabled };
+});
+ok(`souls can be spent at the shrine (v ${m14spend.v0}->${m14spend.v1}, souls ${m14spend.souls0}->${m14spend.souls1})`,
+  m14spend.v1 === m14spend.v0 + 1 && m14spend.souls1 === m14spend.souls0 - 30);
+ok('buy button reflects affordability after in-shop pickup (not stale-disabled)', m14spend.v1 === m14spend.v0 + 1);
+await page.keyboard.press('KeyE');
+await sleepFrames(page, 3);
+st = await S(page);
+ok('shrine closes back to play', st.mode === 'play');
+// the cap must still hold OUTSIDE corridors (can't walk under the slab around the ring)
+await page.evaluate(() => { window.__game.teleport(0, 22); window.__game.setAlt(0); });
+await sleepFrames(page, 15);
+const m14cap = await page.evaluate(() => { const p = window.__game.state().pos; return Math.hypot(p.x, p.z); });
+ok(`outside corridors the ground cap still holds (r=${m14cap.toFixed(2)})`, m14cap < 21.5);
+// boss door still reachable through the N corridor
+await page.evaluate(() => { window.__game.teleport(0, -24); window.__game.setAlt(0); });
+await sleepFrames(page, 15);
+ok('boss door hint reachable', (await page.evaluate(() => document.getElementById('interact').textContent)).includes('BOSS'));
+// respawn nook is stable: death -> resurrect at the bonfire nook, no snap-back.
+// damagePlayer early-returns on iframes/hitstun, so clean + kill in ONE
+// synchronous step (no frame in between to re-contaminate), then poll each
+// transition instead of racing fixed sleeps (headless swiftshader frame pacing).
+// god mode (the M7 audio block) stays ON across the whole suite and absorbs
+// every hit (hp -= god?0:dmg), so it must be off for a real death to land.
+await page.evaluate(() => { window.__game.setGod(false); window.__game.teleport(-21, -21); window.__game.setAlt(0); window.__game.setHp(1); });
+const m14rest = await page.evaluate(async () => {
+  const g = window.__game;
+  const K = (t, k) => window.dispatchEvent(new KeyboardEvent(t, { key: k, code: 'Key' + k, bubbles: true }));
+  let dead = g.state().mode;
+  for (let i = 0; i < 8 && dead !== 'over'; i++) {
+    g.clearCombat(); g.damagePlayer(999);
+    await new Promise((r) => setTimeout(r, 120));
+    dead = g.state().mode;
+  }
+  let mode = dead;
+  for (let i = 0; i < 8 && mode !== 'play'; i++) {
+    K('keydown', 'e');
+    await new Promise((r) => setTimeout(r, 120));
+    mode = g.state().mode;
+  }
+  await new Promise((r) => setTimeout(r, 300)); // first physics frame settles
+  const p = g.state().pos;
+  return { dead, mode, x: p.x, z: p.z };
+});
+ok(`respawn stays in the bonfire nook, no arena snap-back (dead=${m14rest.dead}, mode=${m14rest.mode}, ${m14rest.x.toFixed(1)},${m14rest.z.toFixed(1)})`,
+   m14rest.dead === 'over' && m14rest.mode === 'play' && m14rest.x < -19 && m14rest.z < -19);
 
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line

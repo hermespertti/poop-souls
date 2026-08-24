@@ -60,4 +60,4 @@ measure-fog.mjs
 fog-*.png
 
 # M13 music probe artifacts
-probe-music*.mjs
+probe-*.mjs

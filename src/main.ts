@@ -742,6 +742,7 @@ function updateDrops(dt: number) {
     if ((G.mode === 'play' || G.mode === 'shrine') && G.pos.distanceTo(G.orb.pos) < 1.3) {
       G.save.souls += G.orb.souls;
       G.soulsEarned += G.orb.souls;
+      if (G.mode === 'shrine') renderShrine(); // refresh affordability while the shop is open
       burst(G.orb.pos, 0x7fb8ff, 14, 3, 0.5, 0.07);
       SFX.soulPickup();
       toast(`+${G.orb.souls} SOULS`);
@@ -1141,14 +1142,20 @@ function updatePlayer(dt: number) {
     }
     if (G.alt < 0.05) {
       // on the ground: the inner parapet stops walking under the gallery rim —
-      // except inside a corridor opening, or near a ladder (walk up to the
-      // rungs, then E to climb)
-      const atLadder = v.ladders.some((l) => Math.hypot(G.pos.x - l.x, G.pos.z - l.z) < 2.3);
-      const limit = atLadder ? v.walkIn + 2.2 : inCorr ? v.walkIn + 0.6 : v.walkIn - 0.55;
-      if (rad > limit) {
-        const inv = 1 / (rad || 1);
-        G.pos.x = (G.pos.x * inv) * limit;
-        G.pos.z = (G.pos.z * inv) * limit;
+      // except inside a corridor opening (the passage leads into the corner
+      // nooks: shrine / bonfire / spawn, which sit far OUTSIDE the ring, so
+      // capping the radius inside the passage was the invisible wall that
+      // walled the nooks off ~10u short — M14), or near a ladder (walk up to
+      // the rungs, then E to climb). Once a player is past the ring's outer
+      // edge (in the nook proper) the arena walls bound them, so no cap.
+      if (!inCorr && rad < v.walkOut + 1.0) {
+        const atLadder = v.ladders.some((l) => Math.hypot(G.pos.x - l.x, G.pos.z - l.z) < 2.3);
+        const limit = atLadder ? v.walkIn + 2.2 : v.walkIn - 0.55;
+        if (rad > limit) {
+          const inv = 1 / (rad || 1);
+          G.pos.x = (G.pos.x * inv) * limit;
+          G.pos.z = (G.pos.z * inv) * limit;
+        }
       }
     }
   }
