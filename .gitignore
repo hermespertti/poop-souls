@@ -58,3 +58,6 @@ cap-prod-m8.mjs
 # M11 fog measurement artifacts
 measure-fog.mjs
 fog-*.png
+
+# M13 music probe artifacts
+probe-music*.mjs

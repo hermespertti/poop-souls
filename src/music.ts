@@ -273,12 +273,24 @@ const BOSS_ROOTS = [110.0, 98.0, 73.42]; // A2, G2, D2
 const PENT = [0, 3, 5, 7, 10, 12, 10, 7]; // degrees in semitones
 const PAT = [0, 2, 4, 6, 1, 3, 5, 7, 0, 2, 4, 6, 3, 5, 7, 4];
 
+// M13: the ostinato routes through its own layer gain and fades in/out
+// instead of hard-cutting — the first note no longer pops, a stop doesn't
+// clip a boom mid-decay, and a zone root change crossfades cleanly.
+let bossLayerGain: GainNode | null = null;
+
 function startBossLayer() {
-  stopBossLayer();
+  stopBossLayer(0.3);
   const c = ctx!;
   const zone = ((curZone >= 0 ? curZone : 0) % 3);
   const root = BOSS_ROOTS[zone];
   const step = 0.21; // ~143 bpm eighths
+  // layer gain: 0 -> 1 over 0.7s so the layer swells in under the roar
+  const t0 = c.currentTime;
+  const layer = c.createGain();
+  layer.gain.setValueAtTime(0.0001, t0);
+  layer.gain.linearRampToValueAtTime(1, t0 + 0.7);
+  layer.connect(bus!);
+  bossLayerGain = layer;
   let n = 0;
   const tick = () => {
     if (c.state !== "running") return;
@@ -296,7 +308,7 @@ function startBossLayer() {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(n % 4 === 0 ? 0.1 : 0.06, t + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-    o.connect(lp).connect(g).connect(bus!);
+    o.connect(lp).connect(g).connect(layer);
     o.start(t);
     o.stop(t + 0.18);
     // downbeat boom every 8 steps
@@ -309,7 +321,7 @@ function startBossLayer() {
       bg.gain.setValueAtTime(0.0001, t);
       bg.gain.exponentialRampToValueAtTime(0.28, t + 0.01);
       bg.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
-      b.connect(bg).connect(bus!);
+      b.connect(bg).connect(layer);
       b.start(t);
       b.stop(t + 0.4);
     }
@@ -318,8 +330,25 @@ function startBossLayer() {
   tick();
   bossTimer = window.setInterval(tick, step * 1000);
 }
-function stopBossLayer() {
+// fadeMs: how long the layer takes to release (0 = instant, e.g. a restart
+// where the new layer swells in on top). Without it, the last boom clips
+// mid-decay on every zone change and boss death. The layer node is kept
+// (and readable via debug) until it is actually disconnected, so the fade
+// is observable in tests.
+function stopBossLayer(fadeMs = 0.5) {
   if (bossTimer !== null) { clearInterval(bossTimer); bossTimer = null; }
+  const l = bossLayerGain;
+  if (!l || !ctx) { bossLayerGain = null; return; }
+  const c = ctx;
+  const t = c.currentTime;
+  const fade = fadeMs;
+  l.gain.cancelScheduledValues(t);
+  l.gain.setValueAtTime(Math.max(0.0001, l.gain.value), t);
+  l.gain.linearRampToValueAtTime(0.0001, t + fade);
+  setTimeout(() => {
+    try { l.disconnect(); } catch { /* noop */ }
+    if (bossLayerGain === l) bossLayerGain = null;
+  }, (fade + 0.2) * 1000);
 }
 
 // ---------- public API ----------
@@ -345,6 +374,7 @@ export const MUS = {
   setBoss(on: boolean): void {
     const c = ensureCtx();
     if (!c) return;
+    if (on === curBoss) return;
     curBoss = on;
     if (on) startBossLayer();
     else stopBossLayer();
@@ -365,6 +395,71 @@ export const MUS = {
   // expose the live context for verification taps (reads the final mix)
   ctx(): AudioContext | null {
     return ctx;
+  },
+
+  // RMS of the boss ostinato layer ALONE (M13) — taps the layer gain node
+  // directly, so the drone, air and character hits can't mask the ostinato
+  // in a bus tap. 0 = no layer alive (fully released and disconnected).
+  layerLevel(durMs = 1200): Promise<number> {
+    const c = ctx; const l = bossLayerGain;
+    if (!c || !l || c.state !== "running") return Promise.resolve(0);
+    const an = c.createAnalyser();
+    an.fftSize = 2048;
+    l.connect(an);
+    const data = new Float32Array(an.fftSize);
+    const t0 = performance.now();
+    let acc = 0, n = 0;
+    return new Promise((resolve) => {
+      const step = () => {
+        an.getFloatTimeDomainData(data);
+        let s = 0;
+        for (let i = 0; i < data.length; i++) s += data[i] * data[i];
+        acc += Math.sqrt(s / data.length); n++;
+        if (performance.now() - t0 < durMs) setTimeout(step, 40);
+        else {
+          try { l.disconnect(an); an.disconnect(); } catch { /* noop */ }
+          resolve(Math.round((acc / n) * 100000) / 100000);
+        }
+      };
+      step();
+    });
+  },
+
+  // Band-limited RMS of the mix over durMs (M13). Same analyser tap as
+  // level(), but routed through a double bandpass first. The zone drones live
+  // below ~250Hz; the ostinato's square lead (harmonics 330–990Hz at zone-0
+  // root) is the only loud source in the 300–1200 band, so this isolates the
+  // boss layer for a deterministic "is it actually audible" test — the raw
+  // bus level is drone-dominated and boom-lottery in short windows.
+  bandLevel(lo = 300, hi = 1200, durMs = 1200): Promise<number> {
+    const c = ctx; const b = bus;
+    if (!c || !b || c.state !== "running") return Promise.resolve(0);
+    const f0 = Math.sqrt(lo * hi);
+    const q = f0 / (hi - lo);
+    const bp1 = c.createBiquadFilter();
+    bp1.type = "bandpass"; bp1.frequency.value = f0; bp1.Q.value = q;
+    const bp2 = c.createBiquadFilter();
+    bp2.type = "bandpass"; bp2.frequency.value = f0; bp2.Q.value = q;
+    const an = c.createAnalyser();
+    an.fftSize = 2048;
+    b.connect(bp1).connect(bp2).connect(an);
+    const data = new Float32Array(an.fftSize);
+    const t0 = performance.now();
+    let acc = 0, n = 0;
+    return new Promise((resolve) => {
+      const step = () => {
+        an.getFloatTimeDomainData(data);
+        let s = 0;
+        for (let i = 0; i < data.length; i++) s += data[i] * data[i];
+        acc += Math.sqrt(s / data.length); n++;
+        if (performance.now() - t0 < durMs) setTimeout(step, 40);
+        else {
+          try { b.disconnect(bp1); bp1.disconnect(bp2); bp2.disconnect(an); an.disconnect(); } catch { /* noop */ }
+          resolve(Math.round((acc / n) * 100000) / 100000);
+        }
+      };
+      step();
+    });
   },
 
   // Average RMS of the full music mix over durMs — taps the bus with an
@@ -395,13 +490,16 @@ export const MUS = {
     });
   },
 
-  debug(): { ctx: string | null; zone: number; boss: boolean; duck: boolean; busGain: number | null } {
+  debug(): { ctx: string | null; zone: number; boss: boolean; duck: boolean; busGain: number | null; layerGain: number | null } {
     return {
       ctx: ctx ? ctx.state : null,
       zone: curZone,
       boss: curBoss,
       duck: ducked,
       busGain: bus ? Math.round(bus.gain.value * 1000) / 1000 : null,
+      // M13: live ostinato layer gain — null when no layer exists, ~1 while
+      // the boss is playing, decaying to ~0.0001 during the release fade
+      layerGain: bossLayerGain ? Math.round(bossLayerGain.gain.value * 100000) / 100000 : null,
     };
   },
 };

@@ -1463,6 +1463,7 @@ function bossDefeated() {
   } else {
     G.mode = 'win';
     SFX.victory(); // M8: the Throne is clean — victory sting
+    MUS.setBoss(false); // M13: release the ostinato (no loadZone on the win path)
     MUS.duck(true); // let the ambience drop under the victory screen
     const m = Math.floor(G.runT / 60), s = Math.floor(G.runT % 60);
     $('winStats').innerHTML = `Level ${levelOf()} · ${G.kills} foes slain · ${G.deaths} deaths<br>${G.soulsEarned} souls earned · ${m}m ${s}s<br>The Throne is clean. You may, at last, sit.`;
@@ -2089,6 +2090,8 @@ window.__game = {
   propColliders: () => (G.zoneBuild ? G.zoneBuild.propColliders : []),
   music: () => MUS.debug(),
   musicLevel: (ms?: number) => MUS.level(ms ?? 500),
+  musicBand: (lo?: number, hi?: number, ms?: number) => MUS.bandLevel(lo, hi, ms),
+  musicLayer: (ms?: number) => MUS.layerLevel(ms),
   playerObj: () => player,
   snapLocked: () => {
     const l = G.locked;

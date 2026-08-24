@@ -752,6 +752,40 @@ await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss();
 await sleepFrames(page, 170);
 ok('throne boss keeps the accent after re-attach', await page.evaluate(() => window.__game.accentIntensity()) > 0);
 
+console.log('== M13 boss ostinato fades (no hard cuts) ==');
+// M12 left the throne boss active — the ostinato layer has long since swelled.
+// Pre-M13 the layer was wired straight to the bus: the first note popped,
+// every stop clipped the last boom mid-decay, and the victory path never
+// stopped it at all (infinite tick under the win screen).
+const mLive = await page.evaluate(() => window.__game.music());
+ok('ostinato layer is live and full during the fight', mLive.boss === true && (mLive.layerGain ?? 0) >= 0.9);
+// the victory path: killing the throne boss must release the ostinato
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30); // ~0.5s — inside/just past the 0.5s release fade
+const mWin = await page.evaluate(() => window.__game.music());
+ok('victory releases the ostinato (no infinite tick under the win screen)', mWin.boss === false);
+await sleepFrames(page, 45); // let the release fade + disconnect timer finish
+const mPost = await page.evaluate(() => window.__game.music());
+ok('ostinato layer faded out via release (not a clip)', mPost.layerGain === null || mPost.layerGain <= 0.15);
+// fresh run: boss start must SWELL the layer in, and the mix must be
+// measurably louder with the ostinato than without it
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.startBoss(); });
+const mEarly = await page.evaluate(() => window.__game.music()); // read ASAP — swell is 0.7s
+ok('ostinato swells in on start (gain not yet full, no pop)', (mEarly.layerGain ?? 1) < 0.9);
+await sleepFrames(page, 90); // past the 0.7s swell
+const mFull = await page.evaluate(() => window.__game.music());
+ok('ostinato swell reaches full level', (mFull.layerGain ?? 0) >= 0.9);
+// the ostinato itself must be real signal, not just a gain parameter:
+// tap the layer node directly (drone/air can't mask it there). 2.5s window
+// spans 1.5 boom cycles + 3 accent cycles so the RMS converges (shorter
+// windows are boom-lottery: 0.0040–0.0056 measured across runs).
+const lyrWith = await page.evaluate(() => window.__game.musicLayer(2500));
+ok(`ostinato layer carries real signal (rms=${lyrWith})`, lyrWith > 0.0035);
+await page.evaluate(() => window.__game.killBoss()); // zone 0 -> 1, layer released
+await sleepFrames(page, 60); // release done, layer disconnected
+const lyrAfter = await page.evaluate(() => window.__game.musicLayer(600));
+ok(`released layer is silent (rms=${lyrAfter})`, lyrAfter <= 0.0005);
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));
