@@ -48,12 +48,14 @@ interface Orb { obj: THREE.Mesh; pos: THREE.Vector3; souls: number; }
 interface GritDrop { obj: THREE.Mesh; pos: THREE.Vector3; n: number; }
 
 function defaultSave(): SaveData {
-  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false], flaskCharges: 1, flaskMax: 1, cleansed: false, cleansedTime: 0 };
+  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false], flaskCharges: 1, flaskMax: 1, cleansed: false, cleansedTime: 0, orbX: 0, orbY: 0, orbZ: 0, orbSouls: 0, orbZone: 0 };
 }
 
 const G = {
   mode: 'title' as Mode,
-  save: defaultSave(),
+  // M18: pick up the existing save up front so boot() builds the title backdrop
+  // on the player's real zone instead of clobbering the save with defaults.
+  save: (() => { try { const s = loadSave(); if (s) return s; } catch { /* pre-decl use */ } return defaultSave(); })(),
   zone: 0,
   zoneBuild: null as ZoneBuild | null,
   // player
@@ -350,8 +352,20 @@ function clearZoneEntities() {
   G.gritDrops = [];
 }
 
-function loadZone(i: number) {
+function loadZone(i: number, persist = true) {
   G.zone = i; G.save.zone = i;
+  // M18: travel is one-way — souls left in a zone the run has moved on from
+  // can't follow. Bank them the moment the advance happens, so they're never
+  // stranded invisible in the save (or eaten by the next death without a
+  // refresh).
+  if (G.save.orbSouls > 0 && G.save.orbZone < i) {
+    const n = G.save.orbSouls;
+    if (G.orb) { scene.remove(G.orb.obj); G.orb = null; }
+    G.save.souls += n; G.soulsEarned += n;
+    G.save.orbX = 0; G.save.orbY = 0; G.save.orbZ = 0; G.save.orbSouls = 0; G.save.orbZone = i;
+    toast(`+${n} SOULS — the ones you left behind, now banked`, 2.6);
+    save();
+  }
   if (G.zoneBuild) scene.remove(G.zoneBuild.root);
   clearZoneEntities();
   const zb = buildZone(i);
@@ -386,7 +400,32 @@ function loadZone(i: number) {
   G.atk = null; G.blockHeld = false; G.dodging = 0; G.hitstun = 0; G.iframes = 0;
   elZone.textContent = ZONES[G.zone].name;
   MUS.setZone(i); // crossfade ambient drone + character hits to this zone
+  if (persist) save(); // M18: title-backdrop loads (persist=false) must not write
+}
+// M18: re-materialize the dropped-soul orb from the save — called after a
+// refresh/continue so the orb the player died to drop is still there. The
+// death screen's rule ("die again before you grab them and they're gone")
+// only holds if a page reload doesn't eat them first. Travel is one-way: if
+// the save has advanced past the scene of the crime, the orb can't come back
+// with it — the souls drift into the bank instead of being stranded.
+function restoreOrb(): 'restored' | 'banked' | null {
+  const s = G.save;
+  if (!(s.orbSouls > 0)) return null;
+  if (s.zone === s.orbZone) {
+    if (G.orb) { scene.remove(G.orb.obj); G.orb = null; }
+    const p = new THREE.Vector3(s.orbX, 0.4, s.orbZ);
+    const obj = makeOrbMesh();
+    obj.position.copy(p);
+    G.orb = { obj, pos: p, souls: s.orbSouls };
+    return 'restored';
+  }
+  const n = s.orbSouls;
+  G.save.souls += n;
+  G.soulsEarned += n;
+  s.orbX = 0; s.orbY = 0; s.orbZ = 0; s.orbSouls = 0; s.orbZone = s.zone;
+  toast(`+${n} SOULS — the ones you left behind, now banked`, 2.6);
   save();
+  return 'banked';
 }
 
 // ============================== mobs ==============================
@@ -724,6 +763,12 @@ function dropSouls(pos: THREE.Vector3, souls: number) {
     const obj = makeOrbMesh();
     G.orb = { obj, pos: pos.clone().setY(0.4), souls };
   }
+  // M18: keep the serialized orb in lockstep — a kill drop between deaths must
+  // survive a refresh too, not just the death drop.
+  G.save.orbX = G.orb.pos.x; G.save.orbY = G.orb.pos.y; G.save.orbZ = G.orb.pos.z;
+  G.save.orbSouls = G.orb.souls;
+  if (G.save.orbSouls > 0) G.save.orbZone = G.zone; // first drop anchors the zone
+  save(); // persist now — a refresh a frame later must not read a stale copy
 }
 function makeGritMesh(): THREE.Mesh {
   const obj = new THREE.Mesh(new THREE.OctahedronGeometry(0.14, 0), new THREE.MeshBasicMaterial({ color: 0xd8a24a }));
@@ -749,6 +794,8 @@ function updateDrops(dt: number) {
       toast(`+${G.orb.souls} SOULS`);
       scene.remove(G.orb.obj);
       G.orb = null;
+      // M18: the orb is in the bank now — clear the serialized copy.
+      G.save.orbX = 0; G.save.orbY = 0; G.save.orbZ = 0; G.save.orbSouls = 0;
       save();
     }
   }
@@ -956,6 +1003,12 @@ function die() {
   const obj = makeOrbMesh();
   obj.position.copy(G.pos).setY(0.4);
   G.orb = { obj, pos: G.pos.clone().setY(0.4), souls: G.save.souls };
+  // M18: write the orb into the save so a refresh/continue can re-materialize
+  // it — before this, G.orb was runtime-only and a reload silently ate the souls
+  // the death screen promised to keep.
+  G.save.orbX = G.orb.pos.x; G.save.orbY = G.orb.pos.y; G.save.orbZ = G.orb.pos.z;
+  G.save.orbSouls = G.orb.souls;
+  G.save.orbZone = G.zone; // scene of the crime — restore or bank on continue
   G.save.souls = 0;
   burst(G.pos.clone().setY(1), 0x4a6a8a, 24, 4, 0.9, 0.1);
   G.mode = 'over';
@@ -1842,6 +1895,12 @@ function loadSave(): SaveData | null {
     // M17: migrate pre-completion saves
     if (typeof s.cleansed !== 'boolean') s.cleansed = false;
     if (typeof s.cleansedTime !== 'number') s.cleansedTime = 0;
+    // M18: migrate pre-orb-persistence saves (no orb pending)
+    if (typeof s.orbX !== 'number') s.orbX = 0;
+    if (typeof s.orbY !== 'number') s.orbY = 0;
+    if (typeof s.orbZ !== 'number') s.orbZ = 0;
+    if (typeof s.orbSouls !== 'number') s.orbSouls = 0;
+    if (typeof s.orbZone !== 'number') s.orbZone = s.zone;
     return s;
   } catch { return null; }
 }
@@ -1870,6 +1929,7 @@ function continueGame() {
   loadZone(s.zone);
   G.mode = 'play';
   toast(ZONES[s.zone].name.toUpperCase(), 2);
+  restoreOrb(); // M18: the orb dropped before the refresh comes back
 }
 function refreshTitle() {
   const s = loadSave();
@@ -2124,6 +2184,7 @@ window.__game = {
       glb: G.boss.mixer ? { loaded: true, anim: G.boss.curAnim } : { loaded: false, anim: 'procedural' },
     } : null,
     orbSouls: G.orb ? G.orb.souls : 0,
+    orbPos: G.orb ? { x: Math.round(G.orb.pos.x * 10) / 10, z: Math.round(G.orb.pos.z * 10) / 10 } : null, // M18
     flask: { charges: G.save.flaskCharges, max: G.save.flaskMax, drinking: Math.round(G.flaskDrinking * 100) / 100 },
     gritDrops: G.gritDrops.length,
     iframes: G.iframes, hitstun: G.hitstun, dodging: G.dodging,
@@ -2440,8 +2501,10 @@ function frame() {
 
 // ============================== boot ==============================
 function boot() {
-  // title: build zone 0 behind the menu, sim paused
-  loadZone(0);
+  // title: build the player's own zone behind the menu (M18: before, boot
+  // rebuilt zone 0 and its trailing save() overwrote the entire save on every
+  // refresh). persist=false keeps the backdrop a pure visual.
+  loadZone(Math.max(0, Math.min(2, G.save.zone)), false);
   G.mode = 'title';
   panelTitle.style.display = 'flex';
   refreshTitle();

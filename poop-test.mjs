@@ -1091,6 +1091,113 @@ const m17all3 = await page.evaluate(() => ({
 }));
 ok('3/3 bosses is honored as cleansed without the flag', m17all3.badge === 'block' && m17all3.text.startsWith('CLEANSED'));
 
+console.log('== M18: dropped-soul orb persistence ==');
+// Pre-M18, G.orb was a runtime-only object: a refresh (or quit -> continue)
+// silently ate the souls the death screen promised to keep ("die again before
+// you grab them and they're gone" — a reload was a third way to lose them).
+// Worse, boot()'s zone-0 backdrop ended in save() and overwrote the ENTIRE
+// save with defaults on every page load — a zone-2 run woke up in zone 0.
+// Now the orb is serialized (position + souls + scene-of-crime zone), the
+// title backdrop is a pure visual, and continue re-materializes the orb —
+// banking souls the run has left behind instead of stranding them.
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.setGod(false); });
+await sleepFrames(page, 3);
+// bank 40 souls, then drop them with a real death at a known position
+await page.evaluate(() => { window.__game.teleport(3, 3); window.__game.setAlt(0); window.__game.orb(40); });
+await sleepFrames(page, 5);
+st = await S(page);
+ok('souls banked for the drop (>= 40)', st.souls >= 40);
+const m18drop = st.souls;
+const m18pos = st.pos;
+await page.evaluate(() => { window.__game.clearCombat(); window.__game.setHp(1); window.__game.damagePlayer(999); });
+await sleepFrames(page, 5);
+st = await S(page);
+ok('death drops the orb into the save', st.mode === 'over' && st.orbSouls === m18drop && st.souls === 0);
+const m18save0 = await page.evaluate(() => window.__game.saves());
+ok(`save carries the orb at the scene of the crime (x=${m18save0.orbX}, z=${m18save0.orbZ})`,
+   m18save0.orbSouls === m18drop && m18save0.orbZone === 0 &&
+   Math.hypot(m18save0.orbX - m18pos.x, m18save0.orbZ - m18pos.z) < 0.5);
+// a real browser refresh: boot must not clobber the save
+await page.reload({ waitUntil: 'domcontentloaded' });
+await sleep(2500);
+const m18raw = await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  return { souls: s.souls, orbSouls: s.orbSouls, zone: s.zone };
+});
+ok(`refresh no longer clobbers the save (souls=${m18raw.souls}, orb=${m18raw.orbSouls}, zone=${m18raw.zone})`,
+   m18raw.orbSouls === m18drop && m18raw.zone === 0 && m18raw.souls === 0);
+// CONTINUE re-materializes the orb at the saved position
+await page.evaluate(() => window.__game.continueGame());
+await sleep(300);
+st = await S(page);
+ok(`continue re-materializes the dropped orb (x=${st.orbPos && st.orbPos.x}, z=${st.orbPos && st.orbPos.z})`,
+   st.mode === 'play' && st.orbSouls === m18drop && st.orbPos &&
+   Math.hypot(st.orbPos.x - m18pos.x, st.orbPos.z - m18pos.z) < 0.3);
+ok('bank still empty until the orb is re-collected', st.souls === 0);
+// walk it up — souls return to the bank and the serialized copy clears
+await page.evaluate((o) => { window.__game.teleport(o.x, o.z); window.__game.setAlt(0); }, st.orbPos);
+await sleepFrames(page, 5);
+st = await S(page);
+ok('orb re-collected after refresh (souls back in the bank)', st.souls === m18drop && st.orbSouls === 0);
+const m18cleared = await page.evaluate(() => window.__game.saves());
+ok('serialized orb cleared after pickup', m18cleared.orbSouls === 0 && m18cleared.orbX === 0);
+// kill drops persist in lockstep too — not just death drops
+await page.evaluate(() => {
+  const g = window.__game;
+  g.newGame(); g.killMobs();
+  g.teleport(0, 0); g.setAlt(0);
+  g.orb(25); // drops at (0.8, 0)
+  g.teleport(-10, -10); g.setAlt(0); // walk away before the pickup frame
+});
+await sleepFrames(page, 3);
+const m18kill = await page.evaluate(() => window.__game.saves());
+ok('kill-drop persists to the save before any death', m18kill.orbSouls === 25 && m18kill.orbZone === 0);
+// advancing past the scene of the crime banks the stranded souls instead of
+// stranding them invisible in the save
+const m18soulsBefore = (await S(page)).souls;
+await page.evaluate(() => window.__game.loadZone(1));
+await sleepFrames(page, 3);
+st = await S(page);
+ok(`advancing past the orb banks its souls (+25 -> ${st.souls})`,
+   st.zone === 1 && st.souls === m18soulsBefore + 25 && st.orbSouls === 0);
+// legacy saves (no orb fields) migrate as "no orb pending"
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  delete s.orbX; delete s.orbY; delete s.orbZ; delete s.orbSouls; delete s.orbZone;
+  localStorage.setItem('poop-souls-save-v1', JSON.stringify(s));
+});
+const m18mig = await page.evaluate(() => window.__game.saves());
+ok('legacy save migrates with no pending orb', m18mig.orbSouls === 0 && m18mig.orbZone === 1 && m18mig.orbX === 0);
+// a save that somehow advanced past its own orb banks the souls on continue
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  s.zone = 1; s.orbZone = 0; s.orbX = -20; s.orbY = 0.4; s.orbZ = -20; s.orbSouls = 7; s.souls = 5;
+  localStorage.setItem('poop-souls-save-v1', JSON.stringify(s));
+});
+await page.evaluate(() => window.__game.continueGame());
+await sleep(300);
+st = await S(page);
+ok('continue banks souls left in a previous zone (5+7=12)', st.souls === 12 && st.orbSouls === 0 && st.zone === 1);
+// dying with an empty bank serializes no orb souls (no phantom pickup)
+await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); window.__game.setGod(false); window.__game.teleport(0, 5); window.__game.setAlt(0); });
+await sleepFrames(page, 2);
+await page.evaluate(() => { window.__game.clearCombat(); window.__game.setHp(1); window.__game.damagePlayer(999); });
+await sleepFrames(page, 5);
+st = await S(page);
+const m18empty = await page.evaluate(() => window.__game.saves());
+ok('empty-bank death serializes no orb souls', st.mode === 'over' && st.orbSouls === 0 && m18empty.orbSouls === 0);
+// the title backdrop honors the saved zone — a zone-2 save no longer wakes up in zone 0
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  s.zone = 2;
+  localStorage.setItem('poop-souls-save-v1', JSON.stringify(s));
+});
+await page.reload({ waitUntil: 'domcontentloaded' });
+await sleep(2500);
+st = await S(page);
+ok(`title backdrop honors the saved zone (zone ${st.zone})`,
+   st.mode === 'title' && st.zone === 2 && st.zoneName === 'The Grand Throne');
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

@@ -107,6 +107,15 @@ export interface SaveData {
   flaskMax: number;      // max charges (+1 per boss slain)
   cleansed: boolean;     // M17: a full clear happened in this save — the title honors it
   cleansedTime: number;  // M17: run seconds at the moment of cleansing
+  // M18: the dropped-soul orb survives refresh/continue — the death screen's
+  // "die again before you grab them and they're gone" is now actually true.
+  // Absent/orbX=0 => no orb is pending.
+  orbX: number;
+  orbY: number;
+  orbZ: number;
+  orbSouls: number;
+  orbZone: number;     // zone the orb was dropped in — travel is one-way, so a
+                       // save ahead of the scene of the crime banks the souls
 }
 
 export const SAVE_KEY = 'poop-souls-save-v1';
