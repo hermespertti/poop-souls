@@ -105,6 +105,8 @@ export interface SaveData {
   bossesDefeated: boolean[];
   flaskCharges: number;  // Flask of the First Flush — charges left
   flaskMax: number;      // max charges (+1 per boss slain)
+  cleansed: boolean;     // M17: a full clear happened in this save — the title honors it
+  cleansedTime: number;  // M17: run seconds at the moment of cleansing
 }
 
 export const SAVE_KEY = 'poop-souls-save-v1';

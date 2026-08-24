@@ -1013,6 +1013,84 @@ await sleepFrames(page, 5);
 st = await S(page);
 ok('NEW GAME still resets the run from the epilogue', st.mode === 'play' && st.zone === 0 && st.zoneName === 'The Porcelain Hollow');
 
+console.log('== M17: completion state & reset safety ==');
+// Pre-M17, a finished run existed only as [t,t,t] boss flags inside the save —
+// the title never said "you did this", and NEW GAME wiped a cleansed save in
+// one accidental click. Now victory stamps the save (cleansed + time), the
+// title wears a CLEANSSED badge, and NEW GAME is two-step over a finished run.
+await page.evaluate(() => { window.__game.killMobs(); });
+for (const _b of ['porcelain_king', 'overflow_lord', 'great_stool']) {
+  await page.evaluate(() => window.__game.startBoss());
+  await sleepFrames(page, 5);
+  await page.evaluate(() => window.__game.killBoss());
+  await sleepFrames(page, 30);
+}
+st = await S(page);
+ok('full clear reaches victory', st.mode === 'win');
+const m17stamp = await page.evaluate(() => {
+  const s = window.__game.saves();
+  return { cleansed: s.cleansed, time: s.cleansedTime, bosses: s.bossesDefeated.slice(), runT: window.__game.state().runT };
+});
+ok(`save is stamped CLEANSED (time=${m17stamp.time}s)`, m17stamp.cleansed === true && m17stamp.bosses.every(Boolean) && m17stamp.time === Math.round(m17stamp.runT));
+// out to the title: ESC exits the epilogue, ESC+Q quits (M15/M16 paths)
+await page.keyboard.press('Escape');
+await sleep(300);
+await page.keyboard.press('Escape');
+await sleep(200);
+await page.keyboard.press('KeyQ');
+await sleep(300);
+const m17badge = await page.evaluate(() => ({
+  mode: window.__game.state().mode,
+  disp: document.getElementById('cleansedBadge').style.display,
+  text: document.getElementById('cleansedBadge').textContent,
+}));
+ok(`title wears the CLEANSSED badge ("${m17badge.text}")`, m17badge.mode === 'title' && m17badge.disp === 'block' && m17badge.text.startsWith('CLEANSED'));
+// NEW GAME, first click: it arms — the finished run is NOT erased
+await page.evaluate(() => { document.getElementById('btnNew').click(); });
+await sleep(200);
+const m17arm = await page.evaluate(() => ({
+  label: document.getElementById('btnNew').textContent,
+  mode: window.__game.state().mode,
+  still: window.__game.saves().cleansed,
+}));
+ok('NEW GAME first click only arms (save intact)', m17arm.label === 'ERASE & RESTART?' && m17arm.mode === 'title' && m17arm.still === true);
+// second click: the erasure is confirmed and the run resets
+await page.evaluate(() => { document.getElementById('btnNew').click(); });
+await sleepFrames(page, 5);
+st = await S(page);
+ok('NEW GAME second click resets the run', st.mode === 'play' && st.zone === 0 && st.zoneName === 'The Porcelain Hollow');
+ok('fresh save is un-cleansed', (await page.evaluate(() => window.__game.saves())).cleansed === false);
+// back at the title: badge gone, button label reset
+await page.keyboard.press('Escape');
+await sleep(200);
+await page.keyboard.press('KeyQ');
+await sleep(300);
+const m17reset = await page.evaluate(() => ({
+  badge: document.getElementById('cleansedBadge').style.display,
+  label: document.getElementById('btnNew').textContent,
+}));
+ok('post-reset title: badge hidden, NEW GAME re-armed', m17reset.badge === 'none' && m17reset.label === 'NEW GAME');
+// migration: a pre-M17 save (no cleansed field) loads as un-cleansed
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  delete s.cleansed; delete s.cleansedTime;
+  localStorage.setItem('poop-souls-save-v1', JSON.stringify(s));
+});
+const m17mig = await page.evaluate(() => window.__game.saves());
+ok('legacy save migrates to cleansed=false', m17mig.cleansed === false && m17mig.cleansedTime === 0);
+// 3/3 boss kills counts as cleansed even without the flag (title honors it)
+await page.evaluate(() => {
+  const s = JSON.parse(localStorage.getItem('poop-souls-save-v1'));
+  s.bossesDefeated = [true, true, true];
+  localStorage.setItem('poop-souls-save-v1', JSON.stringify(s));
+});
+await page.evaluate(() => window.__game.retit());
+const m17all3 = await page.evaluate(() => ({
+  badge: document.getElementById('cleansedBadge').style.display,
+  text: document.getElementById('cleansedBadge').textContent,
+}));
+ok('3/3 bosses is honored as cleansed without the flag', m17all3.badge === 'block' && m17all3.text.startsWith('CLEANSED'));
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));

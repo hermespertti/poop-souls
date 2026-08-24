@@ -48,7 +48,7 @@ interface Orb { obj: THREE.Mesh; pos: THREE.Vector3; souls: number; }
 interface GritDrop { obj: THREE.Mesh; pos: THREE.Vector3; n: number; }
 
 function defaultSave(): SaveData {
-  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false], flaskCharges: 1, flaskMax: 1 };
+  return { level: 1, stats: { v: 1, e: 1, s: 1, c: 1 }, souls: 0, grit: 0, weaponTiers: [0, 0, 0, 0], zone: 0, bossesDefeated: [false, false, false], flaskCharges: 1, flaskMax: 1, cleansed: false, cleansedTime: 0 };
 }
 
 const G = {
@@ -1001,6 +1001,9 @@ function drinkFlask() {
 // ============================== player update ==============================
 const keys: Record<string, boolean> = {};
 let spaceQueued = false;
+// M17: NEW GAME arms on first click when the save is cleansed; the second click
+// actually wipes it. Unarmed for mid-run saves (no accidental erasure of WIP).
+let newGameArmed = false;
 
 function updatePlayer(dt: number) {
   // timers
@@ -1473,6 +1476,10 @@ function bossDefeated() {
     SFX.victory(); // M8: the Throne is clean — victory sting
     MUS.setBoss(false); // M13: release the ostinato (no loadZone on the win path)
     MUS.duck(true); // let the ambience drop under the victory screen
+    // M17: stamp the save with the completion — the title honors it, and
+    // NEW GAME knows it would erase a cleansed run
+    G.save.cleansed = true;
+    G.save.cleansedTime = Math.round(G.runT);
     const m = Math.floor(G.runT / 60), s = Math.floor(G.runT % 60);
     $('winStats').innerHTML = `Level ${levelOf()} · ${G.kills} foes slain · ${G.deaths} deaths<br>${G.soulsEarned} souls earned · ${m}m ${s}s<br>The Throne is clean. You may, at last, sit.`;
     save();
@@ -1832,8 +1839,18 @@ function loadSave(): SaveData | null {
     // migrate pre-flask saves
     if (typeof s.flaskCharges !== 'number') s.flaskCharges = 1;
     if (typeof s.flaskMax !== 'number') s.flaskMax = 1;
+    // M17: migrate pre-completion saves
+    if (typeof s.cleansed !== 'boolean') s.cleansed = false;
+    if (typeof s.cleansedTime !== 'number') s.cleansedTime = 0;
     return s;
   } catch { return null; }
+}
+// M17: title-level completion check — a save counts as cleansed if it stamped
+// the flag, or carries all three boss kills (covers saves written just before
+// the M17 stamp landed).
+function isCleansed(s: SaveData | null): boolean {
+  if (!s) return false;
+  return s.cleansed || s.bossesDefeated.every(Boolean);
 }
 function newGame() {
   G.save = defaultSave();
@@ -1858,13 +1875,23 @@ function refreshTitle() {
   const s = loadSave();
   const btn = $('btnContinue') as HTMLButtonElement;
   const info = $('contInfo');
+  const badge = $('cleansedBadge');
+  // M17: reset the NEW GAME confirm state whenever the title is (re)shown
+  newGameArmed = false;
+  ($('btnNew') as HTMLButtonElement).textContent = 'NEW GAME';
   if (s) {
     btn.disabled = false;
     const done = s.bossesDefeated.filter(Boolean).length;
     info.textContent = `LV ${levelOfFromSave(s)} · ${ZONES[s.zone].name} · ${done}/3 bosses`;
+    if (isCleansed(s)) {
+      const m = Math.floor(s.cleansedTime / 60), sec = Math.floor(s.cleansedTime % 60);
+      badge.style.display = 'block';
+      badge.textContent = `CLEANSED · ${m}m ${sec}s · the Throne remains at peace`;
+    } else badge.style.display = 'none';
   } else {
     btn.disabled = true;
     info.textContent = 'No previous ascension found.';
+    badge.style.display = 'none';
   }
 }
 function levelOfFromSave(s: SaveData): number {
@@ -1937,7 +1964,21 @@ window.addEventListener('wheel', (e) => {
 });
 
 // buttons
-($('btnNew') as HTMLButtonElement).onclick = () => { panelTitle.style.display = 'none'; newGame(); };
+// M17: NEW GAME is two-step over a cleansed save — first click arms (the run
+// is NOT erased), second click confirms. Mid-run saves keep the one-click
+// behavior so an in-progress ascension is never one accidental click from a
+// hole.
+($('btnNew') as HTMLButtonElement).onclick = () => {
+  const s = loadSave();
+  if (isCleansed(s) && !newGameArmed) {
+    newGameArmed = true;
+    ($('btnNew') as HTMLButtonElement).textContent = 'ERASE & RESTART?';
+    SFX.ui();
+    return; // a warning, not an erasure
+  }
+  panelTitle.style.display = 'none';
+  newGame();
+};
 ($('btnContinue') as HTMLButtonElement).onclick = () => { const s = loadSave(); if (s) { panelTitle.style.display = 'none'; continueGame(); } };
 ($('btnRespawn') as HTMLButtonElement).onclick = () => { panelOver.style.display = 'none'; resurrect(); };
 ($('btnCloseShrine') as HTMLButtonElement).onclick = () => { panelShrine.style.display = 'none'; closeShrine(); };
@@ -2241,6 +2282,8 @@ window.__game = {
   quit: () => quitToTitle(),
   roam: () => exitWin(), // M16: victory epilogue -> roam the cleansed zone
   win: () => { G.mode = 'win'; }, // M16: debug — jump straight to the epilogue
+  saves: () => loadSave(), // M17: read the localStorage save (migrated)
+  retit: () => refreshTitle(), // M17: re-run title state (badge/arm reset)
   cinematic: (v: boolean) => { G.cinematic = v; },
   bossScreen: () => {
     // where does the boss's head render on screen? (NDC -> pixels)
