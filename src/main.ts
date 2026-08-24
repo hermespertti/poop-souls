@@ -1299,13 +1299,23 @@ function bossSetAnim(b: Boss, name: string, loop: boolean, speed = 1) {
   if (prev) prev.crossFadeTo(next, 0.2, false);
   b.curAnim = name;
 }
-function attachTelegraphLight(group: THREE.Group) {
+function attachTelegraphLight(group: THREE.Group, accent?: number) {
   // M4: red point light that ramps in with the windup — the boss literally glows
   // with incoming danger even when the camera is far.
   const l = new THREE.PointLight(0xff3322, 0, 9, 2);
   l.position.set(0, 2.4, 0);
   group.add(l);
   (group.userData as any).tlight = l;
+  // M12: constant zone-tinted accent light riding the boss. Fog-exemption
+  // (M11) solved distance fade, but the throne's dark-brown Great Stool still
+  // sat in a purple void with no key light on it — this gives the boss (and
+  // anything in melee range) a readable face in the dimmest zones.
+  if (accent !== undefined) {
+    const a = new THREE.PointLight(accent, 8, 12, 2);
+    a.position.set(0, 2.5, 0);
+    group.add(a);
+    (group.userData as any).accent = a;
+  }
 }
 function startBoss() {
   const zb = G.zoneBuild;
@@ -1314,7 +1324,7 @@ function startBoss() {
   const def = BOSSES[zd.boss];
   const { group, mat } = makeBossGroup(def); // procedural base (also the fallback)
   group.position.copy(zb.boss);
-  attachTelegraphLight(group);
+  attachTelegraphLight(group, zd.accent);
   scene.add(group);
   const newBoss: Boss = {
     def, group, mat, hp: def.hp, state: 'idle',
@@ -1339,7 +1349,7 @@ function startBoss() {
       const root = glt.scene.clone(true);
       newBoss.group.clear();
       newBoss.group.add(root);
-      attachTelegraphLight(newBoss.group); // group.clear() destroyed the procedural one
+      attachTelegraphLight(newBoss.group, ZONES[G.zone].accent); // group.clear() destroyed the procedural one
       root.scale.setScalar(ms);
       // ground-normalize: bind-pose bbox may not sit at y=0 (stool floats, porcelain dips)
       const bbox = new THREE.Box3().setFromObject(root);
@@ -2183,6 +2193,12 @@ window.__game = {
     if (!b) return -1;
     const tl = (b.group.userData as any).tlight as THREE.PointLight | undefined;
     return tl ? Math.round(tl.intensity * 100) / 100 : -2;
+  },
+  accentIntensity: () => {
+    const b = G.boss;
+    if (!b) return -1;
+    const a = (b.group.userData as any).accent as THREE.PointLight | undefined;
+    return a ? Math.round(a.intensity * 100) / 100 : -2;
   },
   poseBoss: (gap = 6, camD = 5, pitch = 0.25) => {
     if (!G.boss) return null;

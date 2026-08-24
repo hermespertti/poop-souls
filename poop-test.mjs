@@ -734,6 +734,24 @@ await page.evaluate(() => { window.__game.newGame(); window.__game.killMobs(); w
 await sleepFrames(page, 170);
 ok('fresh-run zone 0 boss is fog-exempt', (await S(page)).boss.fogFree === true);
 
+console.log('== M12 boss accent light (readability key light) ==');
+// M11 solved distance fade; M12 adds a constant zone-tinted accent light that
+// rides the boss (and lights melee range) so dim-zone bosses — the dark-brown
+// Great Stool in the purple throne — have a face to read. The regression risk
+// is the GLB re-attach: group.clear() used to drop lights added before it.
+ok('zone 0 boss carries the accent light (GLB path)', await page.evaluate(() => window.__game.accentIntensity()) > 0);
+// marshal + throne: re-attach happens per-boss, so check each
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170);
+ok('zone 1 boss keeps the accent after re-attach', await page.evaluate(() => window.__game.accentIntensity()) > 0);
+await page.evaluate(() => window.__game.killBoss());
+await sleepFrames(page, 30);
+await page.evaluate(() => { window.__game.killMobs(); window.__game.startBoss(); });
+await sleepFrames(page, 170);
+ok('throne boss keeps the accent after re-attach', await page.evaluate(() => window.__game.accentIntensity()) > 0);
+
 await browser.close();
 // a real asset 404 shows as a non-favicon URL; favicon noise drops with its console line
 const nonFavicon404 = [...notFound].filter((u) => !u.includes('favicon'));
